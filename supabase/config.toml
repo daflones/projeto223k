@@ -1,0 +1,9 @@
+project_id = "eletrify"
+[functions.payments]
+verify_jwt = false
+[functions.mercosulpay-webhook]
+verify_jwt = false
+[functions.process-payments]
+verify_jwt = false
+# payments authenticates the JWT explicitly through auth.getUser on every request,
+# supporting projects with asymmetric signing keys. Webhook uses HMAC; worker its secret.

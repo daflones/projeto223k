@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# Formulário contém credenciais reais fornecidas pelo operador; nunca commitar.
+ELETRIFY-PREENCHER-PRODUCAO-DEVIN.md
+
+!supabase/.env.functions.example
+/smoke-store.mjs
+/smoke-main.mjs
+
+/*.zip
+/*.tar.gz

@@ -1,0 +1,4 @@
+-- Legacy entry point from stage 1. Do not apply this file to the full platform.
+-- Apply migrations/202610060001_platform.sql, 202610060002_catalog.sql,
+-- then 202610060003_investment_terms.sql, in this order.
+-- The first migration also upgrades the original profiles table.

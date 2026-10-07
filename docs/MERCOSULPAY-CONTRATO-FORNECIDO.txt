@@ -1,0 +1,206 @@
+Visão geral
+API REST sobre HTTPS. Corpo em JSON, resposta em JSON, valores em reais com centavos (12.34, não 1234). Datas em ISO 8601 UTC.
+
+Endereço base
+https://mercosulpay.com/api/public/v1
+Esta é a v1, e ela é uma camada de compatibilidade.
+
+A forma das respostas reproduz a do sistema anterior — inclusive um defeito, documentado em Detalhes que mordem. Se você está integrando agora, leia aquela seção antes de escrever a conciliação; é onde o tempo se perde.
+
+Autenticação
+Toda chamada leva a sua chave de API. Você a cria em Painel → Integração → Chaves de API. A chave aparece uma vez só no momento em que é criada — guardamos apenas o hash dela, então não temos como mostrá-la de novo. Se perdeu, revogue e crie outra.
+
+Authorization: Bearer sua_chave_aqui
+Também aceitamos o cabeçalho alternativo, para integrações antigas:
+
+X-API-Key: sua_chave_aqui
+A chave vale por dinheiro saindo.
+
+Ela cria cobrança e pede saque. Ela vive no servidor, nunca no aplicativo, nunca no navegador, nunca num repositório. Uma chave num .env commitado é um saque para a conta de outra pessoa.
+
+Erros e limites
+Todo erro devolve o mesmo formato:
+
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Confira os campos enviados."
+  }
+}
+HTTP	code	O que fazer
+401	unauthorized	Chave ausente, inválida ou revogada. Não adianta repetir.
+403	kyc_required	A conta ainda não foi verificada. Nenhuma operação passa até a aprovação — e não adianta repetir, é a pessoa que precisa enviar os documentos no painel.
+422	validation_error	Campo fora da regra. Corrija o pedido.
+422	limit_exceeded	Passou do teto por operação, do limite diário ou da velocidade de saque.
+422	charge_failed	O provedor recusou de forma permanente. Repetir dá o mesmo resultado.
+429	rate_limited	Mais de 120 requisições por minuto nesta chave. Espere e repita.
+502	provider_unavailable	Problema temporário do provedor. Repetir faz sentido — com espera crescente.
+422 e 502 querem coisas opostas.
+
+Foi por isso que separamos: charge_failed significa "não insista"; provider_unavailable significa "insista, com calma". Um catch que trate os dois igual vai repetir para sempre um pedido que nunca vai passar, ou desistir de um que passaria na segunda tentativa.
+
+Criar cobrança Pix
+POST
+/pix/charges
+Campo	Tipo	Regra
+amount	número	Obrigatório. Em reais, com centavos.
+currency	texto	Ausente = BRL. Aceita também as moedas estrangeiras habilitadas na sua conta — o pagador continua pagando em real, pela cotação do momento.
+description	texto	Até 200 caracteres. Aparece no extrato.
+reference_id	texto	Até 80. O seu identificador — número do quarto, da reserva, do pedido. Volta em todas as respostas e no webhook.
+payer_document	texto	CPF ou CNPJ de quem vai pagar. Opcional — leia o aviso abaixo antes de usar. Pontuação é ignorada.
+payer_name	texto	Nome de quem vai pagar. Até 200. Só faz sentido junto com payer_document.
+Não mande payer_document se qualquer pessoa pode pagar. Esses dois campos travam o QR Code naquele documento: o banco do pagador compara, e recusa quem não for exatamente aquela pessoa — em geral com a mensagem "QR Code inválido", sem explicar o motivo.
+
+Sem eles a cobrança sai aberta, que é o que quase toda integração quer: link de pagamento, checkout, cobrança que o cliente encaminha para outra pessoa pagar. Trave só quando travar for o objetivo — cobrança nominal, mensalidade de um aluno, atendimento de balcão com a pessoa na frente.
+
+⚠️ E nunca mande aqui o documento da sua empresa. Este campo é de quem paga, não de quem recebe.
+
+Exemplo
+curl -X POST https://mercosulpay.com/api/public/v1/pix/charges \
+  -H "Authorization: Bearer $CHAVE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 480.00,
+    "description": "Diária 12/09 — quarto 214",
+    "reference_id": "RES-88213"
+  }'
+Resposta 201
+{
+  "id": "3f1c…",
+  "status": "pending",
+  "amount": 480.00,
+  "fee": 4.32,
+  "net_amount": 475.68,
+  "reference_id": "RES-88213",
+  "qr_code": "00020126…",
+  "qr_code_image": "data:image/png;base64,…",
+  "created_at": "2026-09-01T18:20:11.000Z"
+}
+qr_code é o copia-e-cola; qr_code_image já vem pronto para colocar num <img src>. A cobrança nasce pending — o dinheiro só é seu quando ela vira completed, e é o webhook que avisa.
+
+Consultar cobranças
+GET
+/pix/charges
+Aceita ?limit= (padrão 25, teto 100) e ?status= (pending, completed, failed, refunded). Devolve as mais recentes primeiro.
+
+GET
+/pix/charges/{id}
+Uma cobrança, com description, net_amount e updated_at.
+
+Não fique perguntando de segundo em segundo.
+
+São 120 requisições por minuto na chave inteira; um polling apertado consome esse orçamento e derruba as cobranças novas junto. Use o webhook para saber do pagamento, e a consulta só para conferir um caso específico ou reconstruir depois de uma queda.
+
+Enviar Pix (saque)
+POST
+/pix/withdrawals
+Campo	Tipo	Regra
+amount	número	Obrigatório, em reais.
+pix_key	texto	Obrigatório.
+pix_key_type	texto	Obrigatório: cpf, cnpj, email, phone, evp ou emv.
+recipient_document	texto	CPF (11 dígitos) ou CNPJ (14), com ou sem pontuação. Obrigatório quando pix_key_type for phone, email ou evp — ver abaixo.
+reference_id	texto	Até 80. Use sempre — ver abaixo.
+description	texto	Até 200.
+Chave de telefone, e-mail ou aleatória exige recipient_document.
+
+Chave cpf e cnpj dispensam: a própria chave já é o documento. As outras três não dizem de quem é a conta, e o banco exige saber quem recebe — então o CPF ou CNPJ do destinatário vai no pedido. Sem ele, o saque volta 422.
+
+O formato do telefone não importa: 11999999999, (11) 99999-9999 e +5511999999999 chegam iguais.
+
+POST /v1/pix/withdrawals
+
+{
+  "amount": 100.00,
+  "pix_key": "11999999999",
+  "pix_key_type": "phone",
+  "recipient_document": "12345678901",
+  "reference_id": "seu-id-unico"
+}
+reference_id é a sua proteção contra pagar duas vezes.
+
+Um segundo pedido com o mesmo reference_id não cria outro saque: devolve o primeiro, com "idempotent": true. Isso importa quando a rede cai depois de nós recebermos e antes de você receber a resposta — o caso em que repetir sem proteção manda o dinheiro de novo.
+
+Saldo
+GET
+/balance
+Saldo disponível da conta. É o que um saque pode consumir agora.
+
+Webhooks
+Você cadastra a URL em Painel → Integração → Webhooks e recebe um segredo junto. Eventos que enviamos:
+
+pix.received — entrou dinheiro. É este que confirma a venda.
+pix.sent — o seu saque saiu.
+pix.refunded — houve estorno.
+crypto.received · crypto.sent — o equivalente em cripto.
+Cabeçalhos de cada entrega
+x-mercosulpay-event:     pix.received
+x-mercosulpay-delivery:  <id único desta entrega>
+x-mercosulpay-timestamp: 1788300000
+x-mercosulpay-signature: sha256=<hex>
+Responda 2xx rápido e processe depois.
+
+Se a sua resposta demora, nós tentamos de novo — e a mesma venda chega duas vezes. Guarde o x-mercosulpay-delivery e ignore repetidos: a entrega é ao menos uma vez, nunca exatamente uma. Nenhum sistema honesto promete o contrário.
+
+Conferir a assinatura
+Confira sempre. Sem isso, qualquer um que descubra a sua URL pode dizer que uma venda foi paga — e a sua recepção libera o quarto.
+
+A assinatura é HMAC-SHA256 sobre a string timestamp + "." + corpo_bruto, em hexadecimal minúsculo, com o prefixo sha256=.
+
+const crypto = require('crypto');
+
+function confere(req, segredo) {
+  // O corpo BRUTO, exatamente como chegou. Se você deixar o framework
+  // transformar em objeto e reserializar, um espaço a mais muda o hash
+  // e a assinatura válida passa a ser recusada.
+  const bruto = req.rawBody.toString('utf8');
+  const ts = req.get('x-mercosulpay-timestamp');
+
+  // Recusa entrega velha: sem isto, uma entrega capturada hoje pode ser
+  // reenviada daqui a meses, com a assinatura ainda batendo.
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+
+  const esperado = 'sha256=' + crypto
+    .createHmac('sha256', segredo)
+    .update(`${ts}.${bruto}`)
+    .digest('hex');
+
+  const a = Buffer.from(esperado);
+  const b = Buffer.from(req.get('x-mercosulpay-signature') || '');
+  // Comparação em tempo constante: `===` vaza, pelo tempo, quantos
+  // caracteres o atacante já acertou.
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+Detalhes que mordem
+Estão aqui porque você vai encontrá-los de qualquer jeito. Melhor agora do que no fechamento do mês.
+
+net_amount significa coisas diferentes em dois lugares
+Na resposta do saque, net_amount é valor − taxa. No webhook pix.sent, o campo de mesmo nome é valor + taxa.
+
+Os dois discordam, e a discordância é proposital: ela existe no sistema anterior, e integrações em produção já concilíam contra um ou outro. Corrigir em silêncio trocaria o número debaixo de quem depende dele.
+
+Para conciliar saque, use total_debit — ele é valor + taxa sempre, nos dois lugares, e não depende de interpretação.
+
+A cobrança nasce pending
+Criar cobrança não é receber. Só completed significa dinheiro na conta. Liberar produto no 201 é liberar contra um QR que talvez ninguém pague.
+
+Valores são reais, não centavos
+480.00, não 48000. Dentro do nosso sistema tudo é centavo inteiro; a conversão acontece na borda. Se o seu lado trabalha em centavos, converta na entrada e na saída, e nunca com float.
+
+Cobrança em outra moeda
+currency: "PYG" faz o valor ser interpretado em guaranis, mas o Pix continua sendo em reais — o pagador paga o equivalente pela cotação do momento, que fica congelada na transação. O teto por operação também é o daquela moeda.
+
+Cripto (USDT)
+POST
+/crypto/charges
+asset obrigatório (USDT_BSC) e amount_brl — você pede em reais e nós cobramos o equivalente.
+
+POST
+/crypto/withdrawals
+asset, address e amount.
+
+Endereço errado é dinheiro perdido, e não há estorno.
+
+Confira a rede: USDT_BSC é BNB Smart Chain. Um endereço válido em outra rede aceita o envio e o dinheiro não chega a lugar nenhum.
+
+Ficou faltando algo?
+Escreva para contato@mercosulpay.com. Se você precisou adivinhar alguma coisa nesta página, isso é um defeito da página — conte qual, que a gente corrige.
