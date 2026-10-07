@@ -5,13 +5,15 @@ const w=new Window({url:'https://preview.example.test'});globalThis.window=w;glo
 w.scrollTo=()=>{};globalThis.setInterval=()=>0;globalThis.setTimeout=(fn)=>0;
 const proto=w.HTMLDialogElement.prototype;proto.showModal=function(){this.open=true;this.setAttribute('open','');};proto.close=function(){this.open=false;this.removeAttribute('open');};
 w.document.body.innerHTML='<div id="app"></div>';
-let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,toCents,dailyYield,payout} from './src/lib/store.js';");
+let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,toCents,dailyYield,payout} from './src/lib/store.js';");
 // store relies on Vite import.meta.env. Use its source transformed solely for this test.
-let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replace("'../../supabase/","'./supabase/");
+let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replaceAll('import.meta.env.DEV','true').replace("'../../supabase/","'./supabase/").replace("'./demo.js'","'./src/lib/demo.js'");
 const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'");await writeFile(base+'/smoke-main.mjs',main);
 try{
  await import(pathToFileURL(base+'/smoke-main.mjs').href);w.document.querySelector('#demo-button').click();
- const tick=()=>new Promise(resolve=>nativeTimeout(resolve,20));await tick();
+ const tick=()=>new Promise(resolve=>nativeTimeout(resolve,20));
+ for(let i=0;i<100&&!w.document.querySelector('.shell');i++)await tick();
+ if(!w.document.querySelector('.shell'))throw new Error('Demo mode did not load');
  for(const route of ['products','positions','team','wallet','admin','dashboard']){w.document.querySelector(`[data-action=navigate][data-route=${route}]`).click();await tick();if(!w.document.querySelector('.page h1'))throw new Error('Missing route '+route);}
  for(const act of ['deposit','withdraw','profile','whatsapp']){w.document.querySelector(`[data-action=${act}]`).click();await tick();if(!w.document.querySelector('#modal').open)throw new Error('Modal failed '+act);w.document.querySelector('#modal').close();}
  w.document.querySelector('[data-action=navigate][data-route=admin]').click();await tick();
