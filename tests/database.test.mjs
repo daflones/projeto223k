@@ -5,6 +5,7 @@ const terms=await readFile(new URL('../supabase/migrations/202610060003_investme
 const security=await readFile(new URL('../supabase/migrations/202610060004_admin_and_webhook_queue.sql',import.meta.url),'utf8');
 const launch=await readFile(new URL('../supabase/migrations/202610070001_launch_rules.sql',import.meta.url),'utf8');
 const batch=await readFile(new URL('../supabase/migrations/202610070002_admin_batch_and_transfer_history.sql',import.meta.url),'utf8');
+const auto=await readFile(new URL('../supabase/migrations/202610070004_auto_approve.sql',import.meta.url),'utf8');
 const bootstrap=`create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_user_meta_data jsonb);create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`;
 let db;
 const ids={root:'00000000-0000-4000-8000-000000000001',admin:'00000000-0000-4000-8000-000000000002',child:'00000000-0000-4000-8000-000000000003',grand:'00000000-0000-4000-8000-000000000004'};
@@ -16,7 +17,7 @@ const amount=x=>Number(x);
 await test('Database financial flows and authorization',async t=>{
  db=new PGlite();await db.exec(bootstrap);
  await db.exec(migration);
- await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);await db.exec(batch);
+ await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);await db.exec(batch);await db.exec(auto);
  await t.test('Launch catalog and missing product terms follow category defaults',async()=>{
   const settings=(await db.query('select * from public.platform_settings')).rows[0];
   assert.equal(settings.return_principal,true);assert.equal(settings.withdrawals_enabled,false);
@@ -172,6 +173,20 @@ await test('Database financial flows and authorization',async t=>{
   assert.deepEqual(await act('admin_approve_all',{request_id:rid}),result);
   assert.equal((await db.query("select count(*) n from public.withdrawals where status='approved'")).rows[0].n,2);
  });
+ await t.test('Auto-approve births withdrawals approved when enabled and stays manual when off',async()=>{
+  const settings=autoApprove=>({request_id:req(),withdrawals_enabled:true,auto_approve_withdrawals:autoApprove,return_principal:true,level1_bps:1500,level2_bps:300,level3_bps:100,whatsapp_group:''});
+  await db.exec("update public.withdrawals set day_key=day_key-1");
+  await as(ids.admin);await db.query('select public.app_action($1,$2::jsonb)',['admin_settings',JSON.stringify(settings(true))]);
+  await as(ids.child);
+  const w=await act('withdrawal',{amount_cents:3000,pix_key:'12345678901',pix_key_type:'cpf',recipient_document:'12345678901'});
+  assert.equal(w.status,'approved');assert.equal(w.approved_by,ids.child);
+  const wlt=await wallet(ids.child);assert.equal(amount(wlt.reserved_cents)>0||amount(wlt.available_cents)>=0,true);
+  await as(ids.admin);await db.query('select public.app_action($1,$2::jsonb)',['admin_settings',JSON.stringify(settings(false))]);
+  await db.exec("update public.withdrawals set day_key=day_key-1");
+  await as(ids.grand);
+  const manual=await act('withdrawal',{amount_cents:3000,pix_key:'12345678901',pix_key_type:'cpf',recipient_document:'12345678901'});
+  assert.equal(manual.status,'requested');
+ });
  await t.test('10/15 day maturity returns each principal with the last yield and no duplicates',async()=>{
   await as(ids.admin);await act('admin_balance',{user_id:ids.admin,amount_cents:100000,reason:'Crédito de teste de vencimento'});
   const production=(await act('admin_product',{name:'Vencimento produção',category:'production',image:'/assets/test.png',price_cents:10000,daily_bps:500,duration_days:10,active:true})).id;
@@ -298,11 +313,11 @@ await test('Tracked installation records only applied migrations and rejects an 
  const sql=await trackedInstallationSql();const fresh=new PGlite();
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
-  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),['202610060001','202610060002','202610060003','202610060004','202610070001','202610070002','202610070003']);
+  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),['202610060001','202610060002','202610060003','202610060004','202610070001','202610070002','202610070003','202610070004']);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,7);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,8);
  }finally{await fresh.close();}
 });
 

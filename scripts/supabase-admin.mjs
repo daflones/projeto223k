@@ -8,7 +8,7 @@ const {values} = parseArgs({options:{
   'install-empty':{type:'boolean'},verify:{type:'boolean'},'inspect-backend':{type:'boolean'},
   'deploy-functions':{type:'boolean'},'configure-backend':{type:'boolean'},
   'configure-auth':{type:'boolean'},'configure-templates':{type:'boolean'},'verify-backend':{type:'boolean'},
-  'apply-migrations':{type:'boolean'}
+  'apply-migrations':{type:'boolean'},'promote-admin':{type:'string'}
 }});
 if (!/^[a-z]{20}$/.test(values.project || '')) throw new Error('Informe --project com o project ref Supabase.');
 const input = values['credentials-file'] ? await readFile(values['credentials-file'], 'utf8') : '';
@@ -101,6 +101,16 @@ try {
       await api('/database/query',{query:`begin;\n${sql.trim().replace(/^begin;/i,'').replace(/commit;\s*$/i,'').trim()}\n${record}\ncommit;`,read_only:false});
       console.log(`Aplicada: ${file}`);
     }
+  }
+  if (values['promote-admin']) {
+    const uuid = values['promote-admin'];
+    if (!/^[0-9a-f-]{36}$/i.test(uuid)) throw new Error('Informe --promote-admin com o UUID da conta.');
+    const sql = (await readFile(new URL('../supabase/sql/01_promover_admin.sql',import.meta.url),'utf8'))
+      .replace('00000000-0000-0000-0000-000000000000',uuid);
+    await api('/database/query',{query:sql,read_only:false});
+    const check = await query('select p.is_admin,p.blocked,u.email_confirmed_at is not null confirmed from public.profiles p join auth.users u on u.id=p.id where p.id='+`'${uuid}'`);
+    console.log(JSON.stringify(check));
+    if (!check[0]?.is_admin) throw new Error('Promoção não aplicada.');
   }
   if (values['deploy-functions']) {
     for (const name of functionNames) {
