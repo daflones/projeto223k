@@ -4,6 +4,7 @@ const catalog=await readFile(new URL('../supabase/migrations/202610060002_catalo
 const terms=await readFile(new URL('../supabase/migrations/202610060003_investment_terms.sql',import.meta.url),'utf8');
 const security=await readFile(new URL('../supabase/migrations/202610060004_admin_and_webhook_queue.sql',import.meta.url),'utf8');
 const launch=await readFile(new URL('../supabase/migrations/202610070001_launch_rules.sql',import.meta.url),'utf8');
+const batch=await readFile(new URL('../supabase/migrations/202610070002_admin_batch_and_transfer_history.sql',import.meta.url),'utf8');
 const bootstrap=`create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_user_meta_data jsonb);create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`;
 let db;
 const ids={root:'00000000-0000-4000-8000-000000000001',admin:'00000000-0000-4000-8000-000000000002',child:'00000000-0000-4000-8000-000000000003',grand:'00000000-0000-4000-8000-000000000004'};
@@ -15,7 +16,7 @@ const amount=x=>Number(x);
 await test('Database financial flows and authorization',async t=>{
  db=new PGlite();await db.exec(bootstrap);
  await db.exec(migration);
- await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);
+ await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);await db.exec(batch);
  await t.test('Launch catalog and missing product terms follow category defaults',async()=>{
   const settings=(await db.query('select * from public.platform_settings')).rows[0];
   assert.equal(settings.return_principal,true);assert.equal(settings.withdrawals_enabled,false);
@@ -50,7 +51,7 @@ await test('Database financial flows and authorization',async t=>{
    assert.equal(snap.profile.is_admin,false);assert.equal(snap.admin,undefined);
    await assert.rejects(db.query('update public.profiles set is_admin=true where id=$1',[ids.root]),/permission denied/);
    await assert.rejects(db.query('select public.app_action_internal($1,$2::jsonb)',['admin_settings','{}']),/permission denied/);
-   for(const name of ['admin_product','admin_settings','admin_user','admin_balance','admin_position','admin_approve','admin_reject','admin_retry_event','admin_retry_withdrawal']){
+   for(const name of ['admin_product','admin_settings','admin_user','admin_balance','admin_position','admin_approve','admin_approve_all','admin_reject','admin_retry_event','admin_retry_withdrawal']){
     await assert.rejects(act(name,{is_admin:true}),/negado/);
    }
   }finally{await db.exec('reset role');}
@@ -133,6 +134,44 @@ await test('Database financial flows and authorization',async t=>{
  await t.test('Deposit credits completed only and duplicate delivery cannot double credit',async()=>{const id=req();await db.query('insert into public.deposits(id,user_id,amount_cents,provider_id,status) values($1,$2,3500,$3,$4)',[id,ids.child,'provider-123','pending']);const before=await wallet(ids.child);await db.query('select public.settle_deposit($1,$2,$3,$4,$5)',[id,'provider-123',3500,'pending',10]);assert.equal(amount((await wallet(ids.child)).available_cents),amount(before.available_cents));await db.query('select public.settle_deposit($1,$2,$3,$4,$5)',[id,'provider-123',3500,'completed',10]);await db.query('select public.settle_deposit($1,$2,$3,$4,$5)',[id,'provider-123',3500,'completed',10]);assert.equal(amount((await wallet(ids.child)).available_cents),amount(before.available_cents)+3500);await assert.rejects(db.query('select public.settle_deposit($1,$2,$3,$4,$5)',[id,'wrong',3500,'completed',10]),/divergente/);});
  await t.test('Regular user cannot access admin or privileged financial functions',async()=>{await as(ids.child);await assert.rejects(db.query('select public.app_snapshot(true)'),/negado/);await assert.rejects(act('admin_balance',{user_id:ids.root,amount_cents:999999,reason:'Exploit test'}),/negado/);await db.exec('set role authenticated');await assert.rejects(db.query('select public.process_yields()'),/permission denied/);await assert.rejects(db.query('select * from public.wallets'),/permission denied/);await db.exec('reset role');});
  await t.test('Withdrawal settlement requires approved state and releases reservation exactly once',async()=>{await as(ids.grand);const w=await act('withdrawal',{amount_cents:10000,pix_key:'12345678901',pix_key_type:'cpf',recipient_document:'12345678901'});await assert.rejects(db.query('select public.settle_withdrawal($1,$2,$3,$4)',[w.id,'completed','provider-w',9600]),/não autorizado/);await as(ids.admin);await act('admin_approve',{ids:[w.id]});await db.query('select public.claim_withdrawals(20)');await db.query('select public.settle_withdrawal($1,$2,$3,$4)',[w.id,'completed','provider-w',9600]);await db.query('select public.settle_withdrawal($1,$2,$3,$4)',[w.id,'completed','provider-w',9600]);assert.equal(amount((await wallet(ids.grand)).reserved_cents),0);});
+ await t.test('Snapshot exposes only own transfers with direction and counterparty name',async()=>{
+  await as(ids.root);
+  const snap=(await db.query('select public.app_snapshot(false) result')).rows[0].result;
+  assert(Array.isArray(snap.transfers));assert.equal(snap.transfers.length,1);
+  assert.equal(snap.transfers[0].direction,'sent');assert.equal(snap.transfers[0].counterparty,'Child');assert.equal(amount(snap.transfers[0].amount_cents),1000);assert(snap.transfers[0].created_at);
+  await as(ids.child);
+  const received=(await db.query('select public.app_snapshot(false) result')).rows[0].result;
+  assert.equal(received.transfers.length,1);
+  assert.equal(received.transfers[0].direction,'received');assert.equal(received.transfers[0].counterparty,'Root');assert.equal(amount(received.transfers[0].amount_cents),1000);
+  await as(ids.grand);
+  const empty=(await db.query('select public.app_snapshot(false) result')).rows[0].result;
+  assert.deepEqual(empty.transfers,[]);
+  assert.equal((await db.query('select count(*) n from public.transfers')).rows[0].n,1);
+ });
+ await t.test('admin_approve_all approves every requested row server-side and audits the count',async()=>{
+  const data={pix_key:'12345678901',pix_key_type:'cpf',recipient_document:'12345678901'};
+  await db.exec("update public.withdrawals set day_key=day_key-1");
+  await as(ids.child);const w1=await act('withdrawal',{...data,amount_cents:3000});
+  await as(ids.grand);const w2=await act('withdrawal',{...data,amount_cents:4000});
+  const processing=(await db.query("insert into public.withdrawals(user_id,amount_cents,fee_cents,payout_cents,pix_key,pix_key_type,recipient_document,status,day_key) values($1,5000,250,4750,'12345678901','cpf','12345678901','processing',(now() at time zone 'America/Sao_Paulo')::date-2) returning id",[ids.admin])).rows[0].id;
+  await as(ids.admin);
+  await db.exec('begin;');
+  try{
+   await db.query('update public.platform_settings set withdrawals_enabled=false');
+   await assert.rejects(act('admin_approve_all',{}),/Ative os saques/);
+  }finally{await db.exec('rollback;');}
+  const rid=req();const result=await act('admin_approve_all',{request_id:rid});
+  assert.equal(result.approved,2);
+  const first=(await db.query('select status,approved_by from public.withdrawals where id=$1',[w1.id])).rows[0];
+  assert.equal(first.status,'approved');assert.equal(first.approved_by,ids.admin);
+  assert.equal((await db.query('select status from public.withdrawals where id=$1',[w2.id])).rows[0].status,'approved');
+  assert.equal((await db.query('select status from public.withdrawals where id=$1',[processing])).rows[0].status,'processing');
+  assert.equal((await db.query("select count(*) n from public.withdrawals where status='requested'")).rows[0].n,0);
+  const audit=(await db.query("select * from public.admin_audit where action='admin_approve_all' order by id desc limit 1")).rows[0];
+  assert.equal(audit.admin_id,ids.admin);assert.equal(audit.details.approved,2);
+  assert.deepEqual(await act('admin_approve_all',{request_id:rid}),result);
+  assert.equal((await db.query("select count(*) n from public.withdrawals where status='approved'")).rows[0].n,2);
+ });
  await t.test('10/15 day maturity returns each principal with the last yield and no duplicates',async()=>{
   await as(ids.admin);await act('admin_balance',{user_id:ids.admin,amount_cents:100000,reason:'Crédito de teste de vencimento'});
   const production=(await act('admin_product',{name:'Vencimento produção',category:'production',image:'/assets/test.png',price_cents:10000,daily_bps:500,duration_days:10,active:true})).id;
@@ -259,11 +298,11 @@ await test('Tracked installation records only applied migrations and rejects an 
  const sql=await trackedInstallationSql();const fresh=new PGlite();
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
-  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),['202610060001','202610060002','202610060003','202610060004','202610070001']);
+  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),['202610060001','202610060002','202610060003','202610060004','202610070001','202610070002','202610070003']);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,5);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,7);
  }finally{await fresh.close();}
 });
 

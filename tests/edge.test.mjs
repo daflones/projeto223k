@@ -20,6 +20,7 @@ const env = new Map(Object.entries({
 }));
 let profile = {id: uid, is_admin: false, blocked: false};
 let calls = [], events = [], withdrawal = null, raceDeposit = null;
+let claimedWithdrawals = [], withdrawalsEnabledFlag = true, pauseOnSend = false;
 const deliveries = new Set();
 const json = (value, status = 200) => Response.json(value, {status});
 const realFetch = globalThis.fetch;
@@ -36,6 +37,11 @@ const mockFetch = async (input, init = {}) => {
     raceDeposit.status = 'completed';raceDeposit.provider_id = 'charge-race';
     return json({id: 'charge-race', reference_id: raceDeposit.id, amount: raceDeposit.amount_cents / 100, status: 'pending', qr_code: 'fixture-qr'}, 201);
   }
+  if (url.origin === 'https://mercosulpay.com' && url.pathname === '/api/public/v1/pix/withdrawals' && method === 'POST') {
+    const response = json({id: 'provider-w-' + body.reference_id, reference_id: body.reference_id, amount: body.amount, total_debit: body.amount, status: 'pending'}, 201);
+    if (pauseOnSend) withdrawalsEnabledFlag = false;
+    return response;
+  }
   if (url.origin !== env.get('SUPABASE_URL')) throw new Error(`Unexpected external call: ${url}`);
   if (url.pathname === '/auth/v1/user') {
     if (headers.get('authorization') !== `Bearer ${token}`) return json({message: 'Invalid JWT', code: 'bad_jwt'}, 401);
@@ -44,7 +50,8 @@ const mockFetch = async (input, init = {}) => {
   }
   if (url.pathname === '/rest/v1/profiles') return json(profile);
   if (url.pathname === '/functions/v1/process-payments') return json({processed: 0});
-  if (url.pathname === '/rest/v1/rpc/claim_withdrawals') return json([]);
+  if (url.pathname === '/rest/v1/platform_settings') return json({withdrawals_enabled: withdrawalsEnabledFlag});
+  if (url.pathname === '/rest/v1/rpc/claim_withdrawals') return json(claimedWithdrawals);
   if (url.pathname === '/rest/v1/rpc/claim_webhook_events') return json(events);
   if (url.pathname === '/rest/v1/rpc/settle_withdrawal') return json(null);
   if (url.pathname === '/rest/v1/deposits') {
@@ -198,6 +205,68 @@ test('Worker reconciles pix.sent using total_debit and records only its current 
   assert.equal(saved.body.status, 'processed');
   assert.equal(saved.url.searchParams.get('claim_token'), 'eq.lease-fixture');
   events = [];withdrawal = null;
+});
+
+const workerReq = () => new Request('https://supabase.example.test/functions/v1/process-payments', {
+  method: 'POST', headers: {'x-worker-secret': env.get('WORKER_SECRET')},
+});
+const sendCalls = () => calls.filter(c => c.url.origin === 'https://mercosulpay.com' && c.url.pathname === '/api/public/v1/pix/withdrawals');
+
+test('Worker sends nothing while payouts are paused and the claimed row stays retriable', async () => {
+  calls = []; events = []; deliveries.clear();
+  claimedWithdrawals = [{id: uid, payout_cents: 5000, pix_key: '12345678900', pix_key_type: 'cpf', recipient_document: '12345678900', provider_id: null}];
+  withdrawalsEnabledFlag = false;
+  try {
+    const paused = await worker(workerReq());
+    assert.equal(paused.status, 200);
+    assert.equal((await paused.json()).more, true);
+    assert.equal(sendCalls().length, 0, 'Paused worker must not start gateway sends');
+    assert.equal(calls.filter(c => c.url.pathname === '/rest/v1/rpc/settle_withdrawal').length, 0);
+    assert(calls.some(c => c.url.pathname === '/rest/v1/platform_settings'), 'Per-item pause check must read platform_settings');
+    withdrawalsEnabledFlag = true;
+    const resumed = await worker(workerReq());
+    assert.equal(resumed.status, 200);
+    assert.equal(sendCalls().length, 1);
+    assert.equal(sendCalls()[0].body.reference_id, uid);
+    assert.equal(sendCalls()[0].body.amount, 50);
+  } finally {claimedWithdrawals = []; withdrawalsEnabledFlag = true; events = [];}
+});
+
+test('Worker re-checks withdrawals_enabled before each send when the flag flips mid-run', async () => {
+  calls = []; events = [];
+  const w = id => ({id, payout_cents: 3000, pix_key: 'k', pix_key_type: 'cpf', recipient_document: 'doc', provider_id: null});
+  claimedWithdrawals = [w('00000000-0000-4000-8000-000000000021'), w('00000000-0000-4000-8000-000000000022')];
+  withdrawalsEnabledFlag = true; pauseOnSend = true;
+  try {
+    const result = await worker(workerReq());
+    assert.equal(result.status, 200);
+    assert.equal((await result.json()).more, true);
+    assert.equal(sendCalls().length, 1, 'Second claimed withdrawal must not be sent after the pause');
+    assert.equal(sendCalls()[0].body.reference_id, '00000000-0000-4000-8000-000000000021');
+  } finally {claimedWithdrawals = []; withdrawalsEnabledFlag = true; pauseOnSend = false; events = [];}
+});
+
+test('Worker bounds sends and event processing per run and reports partial progress', async () => {
+  calls = []; events = [];
+  claimedWithdrawals = Array.from({length: 6}, (_, i) => ({id: `00000000-0000-4000-8000-00000000003${i}`, payout_cents: 3000, pix_key: 'k', pix_key_type: 'cpf', recipient_document: 'doc', provider_id: null}));
+  withdrawalsEnabledFlag = true;
+  try {
+    const res = await worker(workerReq());
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).more, true);
+    assert.equal(sendCalls().length, 4, 'Sends must be capped below the wall-clock budget');
+    const claim = calls.find(c => c.url.pathname === '/rest/v1/rpc/claim_withdrawals');
+    assert.ok(claim.body.p_limit <= 4);
+    calls = []; claimedWithdrawals = [];
+    events = Array.from({length: 15}, (_, i) => ({delivery_id: `bounded-${i}`, event: 'unknown.event', claim_token: `lease-${i}`, attempts: 0, payload: {reference_id: uid}}));
+    const res2 = await worker(workerReq());
+    assert.equal(res2.status, 200);
+    assert.equal((await res2.json()).more, true);
+    const writes = calls.filter(c => c.url.pathname === '/rest/v1/webhook_inbox' && c.method === 'PATCH');
+    assert.equal(writes.length, 10, 'Event processing must be capped per run');
+    const eventClaim = calls.find(c => c.url.pathname === '/rest/v1/rpc/claim_webhook_events');
+    assert.ok(eventClaim.body.p_limit <= 10);
+  } finally {claimedWithdrawals = []; withdrawalsEnabledFlag = true; events = [];}
 });
 
 test.after(() => {globalThis.fetch = realFetch;delete globalThis.Deno;});

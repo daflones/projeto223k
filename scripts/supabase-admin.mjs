@@ -1,4 +1,4 @@
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import {parseArgs} from 'node:util';
 import {randomBytes} from 'node:crypto';
 import {installationSql,trackedInstallationSql} from './build-supabase-sql.mjs';
@@ -7,7 +7,8 @@ const {values} = parseArgs({options:{
   project:{type:'string'},'credentials-file':{type:'string'},origin:{type:'string'},
   'install-empty':{type:'boolean'},verify:{type:'boolean'},'inspect-backend':{type:'boolean'},
   'deploy-functions':{type:'boolean'},'configure-backend':{type:'boolean'},
-  'configure-auth':{type:'boolean'},'configure-templates':{type:'boolean'},'verify-backend':{type:'boolean'}
+  'configure-auth':{type:'boolean'},'configure-templates':{type:'boolean'},'verify-backend':{type:'boolean'},
+  'apply-migrations':{type:'boolean'}
 }});
 if (!/^[a-z]{20}$/.test(values.project || '')) throw new Error('Informe --project com o project ref Supabase.');
 const input = values['credentials-file'] ? await readFile(values['credentials-file'], 'utf8') : '';
@@ -86,6 +87,20 @@ try {
     }
     await api('/database/query', {query:await trackedInstallationSql(),read_only:false});
     console.log('Instalação SQL e histórico de migrações aplicados na mesma transação.');
+  }
+  if (values['apply-migrations']) {
+    const dir = new URL('../supabase/migrations/', import.meta.url);
+    const files = (await readdir(dir)).filter(name=>/^\d+_.+\.sql$/.test(name)).sort();
+    const applied = new Set((await query('select version from supabase_migrations.schema_migrations')).map(r=>r.version));
+    const pending = files.filter(f=>!applied.has(f.split('_')[0]));
+    if (!pending.length) { console.log('Nenhuma migração pendente.'); }
+    for (const file of pending) {
+      const sql = await readFile(new URL(file, dir),'utf8');
+      const version = file.split('_')[0];
+      const record = `insert into supabase_migrations.schema_migrations(version,name,statements) values('${version}','${file.replaceAll("'","''")}',ARRAY['${sql.replaceAll("'","''")}']);`;
+      await api('/database/query',{query:`begin;\n${sql.trim().replace(/^begin;/i,'').replace(/commit;\s*$/i,'').trim()}\n${record}\ncommit;`,read_only:false});
+      console.log(`Aplicada: ${file}`);
+    }
   }
   if (values['deploy-functions']) {
     for (const name of functionNames) {
@@ -211,7 +226,8 @@ try {
       (select count(*) from public.ledger) as ledger_entries`);
     console.log(JSON.stringify({tables,functions,settings,catalog,history,limits,counts},null,2));
     if (tables.length!==13 || tables.some(t=>!t.relrowsecurity||t.anon_access||t.user_access)
-      || functions.some(f=>f.anon_execute || f.user_execute!==['app_action','app_snapshot'].includes(f.proname))
+      || functions.some(f=>f.anon_execute!==(f.proname==='referral_lookup')
+        || f.user_execute!==['app_action','app_snapshot','referral_lookup'].includes(f.proname))
       || !limits[0]?.withdrawal_rpc_minimum || !limits[0]?.deposit_trigger_minimum || !limits[0]?.deposit_trigger_enabled) {
       throw new Error('Verificação de permissões ou limites falhou.');
     }
