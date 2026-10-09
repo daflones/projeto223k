@@ -227,6 +227,10 @@ try {
       position('amt<3000' in pg_get_functiondef('public.app_action_internal(text,jsonb)'::regprocedure))>0 as withdrawal_rpc_minimum,
       position('new.amount_cents<3500' in pg_get_functiondef('public.deposit_launch_amount()'::regprocedure))>0 as deposit_trigger_minimum,
       exists(select 1 from pg_trigger where tgrelid='public.deposits'::regclass and tgname='deposit_launch_amount' and tgenabled='O') as deposit_trigger_enabled`);
+    const retryRule = history.some(m=>m.version==='202610090001') ? await query(`select
+      exists(select 1 from pg_index i join pg_class c on c.oid=i.indexrelid where c.relname='withdrawals_one_active_per_day' and i.indisunique and i.indpred is not null and pg_get_expr(i.indpred,i.indrelid) not ilike '%failed%' and pg_get_expr(i.indpred,i.indrelid) not ilike '%rejected%') as partial_unique,
+      not exists(select 1 from pg_constraint where conrelid='public.withdrawals'::regclass and conname='withdrawals_user_id_day_key_key') as old_constraint_removed,
+      position('status not in (''failed'',''rejected'')' in pg_get_functiondef('public.app_action_internal(text,jsonb)'::regprocedure))>0 as failed_retry_enabled`) : [];
     const counts = await query(`select
       (select count(*) from auth.users) as users,
       (select count(*) from public.profiles where is_admin) as admins,
@@ -234,10 +238,12 @@ try {
       (select count(*) from public.deposits) as deposits,
       (select count(*) from public.withdrawals) as withdrawals,
       (select count(*) from public.ledger) as ledger_entries`);
-    console.log(JSON.stringify({tables,functions,settings,catalog,history,limits,counts},null,2));
-    if (tables.length!==13 || tables.some(t=>!t.relrowsecurity||t.anon_access||t.user_access)
+    console.log(JSON.stringify({tables,functions,settings,catalog,history,limits,retryRule,counts},null,2));
+    if (retryRule.length && (!retryRule[0].partial_unique || !retryRule[0].old_constraint_removed || !retryRule[0].failed_retry_enabled)) throw new Error('Regra de nova tentativa de saque não verificada.');
+    const couponsInstalled=history.some(m=>m.version==='202610090002');
+    if (tables.length!==(couponsInstalled?16:13) || tables.some(t=>!t.relrowsecurity||t.anon_access||t.user_access)
       || functions.some(f=>f.anon_execute!==(f.proname==='referral_lookup')
-        || f.user_execute!==['app_action','app_snapshot','referral_lookup'].includes(f.proname))
+        || f.user_execute!==['app_action','app_snapshot','referral_lookup',...(couponsInstalled?['coupon_admin_save','coupon_admin_list','coupon_preview','coupon_redeem']:[])].includes(f.proname))
       || !limits[0]?.withdrawal_rpc_minimum || !limits[0]?.deposit_trigger_minimum || !limits[0]?.deposit_trigger_enabled) {
       throw new Error('Verificação de permissões ou limites falhou.');
     }

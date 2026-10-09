@@ -1,4 +1,4 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {PGlite} from '@electric-sql/pglite';import {readFile} from 'node:fs/promises';
+import test from 'node:test';import assert from 'node:assert/strict';import {PGlite} from '@electric-sql/pglite';import {readFile,readdir} from 'node:fs/promises';
 const migration=await readFile(new URL('../supabase/migrations/202610060001_platform.sql',import.meta.url),'utf8');
 const catalog=await readFile(new URL('../supabase/migrations/202610060002_catalog.sql',import.meta.url),'utf8');
 const terms=await readFile(new URL('../supabase/migrations/202610060003_investment_terms.sql',import.meta.url),'utf8');
@@ -6,6 +6,8 @@ const security=await readFile(new URL('../supabase/migrations/202610060004_admin
 const launch=await readFile(new URL('../supabase/migrations/202610070001_launch_rules.sql',import.meta.url),'utf8');
 const batch=await readFile(new URL('../supabase/migrations/202610070002_admin_batch_and_transfer_history.sql',import.meta.url),'utf8');
 const auto=await readFile(new URL('../supabase/migrations/202610070004_auto_approve.sql',import.meta.url),'utf8');
+const retry=await readFile(new URL('../supabase/migrations/202610090001_retry_failed_withdrawals.sql',import.meta.url),'utf8');
+const coupons=await readFile(new URL('../supabase/migrations/202610090002_coupons.sql',import.meta.url),'utf8');
 const bootstrap=`create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_user_meta_data jsonb);create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`;
 let db;
 const ids={root:'00000000-0000-4000-8000-000000000001',admin:'00000000-0000-4000-8000-000000000002',child:'00000000-0000-4000-8000-000000000003',grand:'00000000-0000-4000-8000-000000000004'};
@@ -17,7 +19,7 @@ const amount=x=>Number(x);
 await test('Database financial flows and authorization',async t=>{
  db=new PGlite();await db.exec(bootstrap);
  await db.exec(migration);
- await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);await db.exec(batch);await db.exec(auto);
+ await db.exec(catalog);await db.exec(terms);await db.exec(security);await db.exec(launch);await db.exec(batch);await db.exec(auto);await db.exec(retry);await db.exec(coupons);
  await t.test('Launch catalog and missing product terms follow category defaults',async()=>{
   const settings=(await db.query('select * from public.platform_settings')).rows[0];
   assert.equal(settings.return_principal,true);assert.equal(settings.withdrawals_enabled,false);
@@ -113,6 +115,30 @@ await test('Database financial flows and authorization',async t=>{
   try{
    await db.query('update public.wallets set available_cents=1000000 where user_id=$1',[ids.grand]);await as(ids.grand);
    const max=await act('withdrawal',{...data,amount_cents:1000000});assert.equal(amount(max.fee_cents),50000);assert.equal(amount(max.payout_cents),950000);
+  }finally{await db.exec('rollback;');}
+ });
+ await t.test('Failed or rejected withdrawal permits retry, but uncertain or completed withdrawal holds the daily slot',async()=>{
+  const data={amount_cents:3000,pix_key:'12345678901',pix_key_type:'cpf',recipient_document:'12345678901'};
+  await db.exec('begin;');
+  try{
+   await as(ids.grand);const before=await wallet(ids.grand);
+   const rejected=await act('withdrawal',data);
+   await as(ids.admin);await act('admin_reject',{ids:[rejected.id],reason:'Chave incorreta'});
+   assert.deepEqual(await wallet(ids.grand),before);
+   await as(ids.grand);const failed=await act('withdrawal',data);
+   await as(ids.admin);await act('admin_approve',{ids:[failed.id]});
+   await db.query('select public.settle_withdrawal($1,$2,$3,$4,$5)',[failed.id,'review',null,null,'Resultado incerto']);
+   await as(ids.grand);await db.exec('savepoint blocked_review');await assert.rejects(act('withdrawal',data),/já solicitou/);await db.exec('rollback to savepoint blocked_review');
+   await db.query('select public.settle_withdrawal($1,$2,$3,$4,$5)',[failed.id,'failed',null,null,'Recusa confirmada']);
+   await db.query('select public.settle_withdrawal($1,$2,$3,$4,$5)',[failed.id,'failed',null,null,'Recusa confirmada']);
+   assert.deepEqual(await wallet(ids.grand),before);
+   await db.exec('update public.platform_settings set auto_approve_withdrawals=true');
+   const completed=await act('withdrawal',data);assert.equal(completed.status,'approved');
+   await db.query('select public.settle_withdrawal($1,$2,$3,$4,$5)',[completed.id,'completed','provider-success',2850,null]);
+   await as(ids.grand);await db.exec('savepoint blocked_completed');await assert.rejects(act('withdrawal',data),/já solicitou/);await db.exec('rollback to savepoint blocked_completed');
+   assert.equal(amount((await wallet(ids.grand)).reserved_cents),amount(before.reserved_cents));
+   assert.equal(amount((await wallet(ids.grand)).available_cents),amount(before.available_cents)-3000);
+   assert.equal((await db.query('select count(*) n from public.withdrawals where user_id=$1 and day_key=(now() at time zone $2)::date',[ids.grand,'America/Sao_Paulo'])).rows[0].n,3);
   }finally{await db.exec('rollback;');}
  });
  await t.test('Transfer aggregated R$100/day, eligibility and idempotent credits',async()=>{await as(ids.root);await act('transfer',{user_id:ids.child,amount_cents:1000});await assert.rejects(act('transfer',{user_id:ids.child,amount_cents:9100}),/Limite de transferência/);await assert.rejects(act('transfer',{user_id:ids.admin,amount_cents:1}),/fora da equipe/);});
@@ -231,6 +257,97 @@ await test('Database financial flows and authorization',async t=>{
  await db.close();
 });
 
+await test('Coupon permissions, snapshots, limits and idempotency',async()=>{
+ const store=new PGlite();
+ const user=ids.child,other=ids.grand,admin=ids.admin;
+ const identity=async id=>store.query("select set_config('request.jwt.claim.sub',$1,false)",[id]);
+ const save=async data=>(await store.query('select public.coupon_admin_save($1::jsonb) result',[JSON.stringify(data)])).rows[0].result;
+ const preview=async code=>(await store.query('select public.coupon_preview($1) result',[code])).rows[0].result;
+ const redeem=async(code,options,rid=req())=>(await store.query('select public.coupon_redeem($1,$2::uuid[],$3::uuid) result',[code,options,rid])).rows[0].result;
+ const base=code=>({code,message:'Obrigado',active:true,max_total:3,max_per_user:2,max_selections:2,options:[{kind:'balance',amount_cents:4500,message:'Saldo bônus'},{kind:'product',product_id:catalogId,daily_bps:325,duration_days:9,return_principal:false},{kind:'custom',name:'Exclusivo',image:'/assets/exclusive.png',category:'production',price_cents:12000,daily_bps:270,duration_days:7,return_principal:true,message:'Produto escolhido'}]});
+ let catalogId;
+ try{
+  await store.exec(bootstrap);for(const sql of [migration,catalog,terms,security,launch,batch,auto,retry,coupons]) await store.exec(sql);
+  for(const [id,name] of [[admin,'Coupon Admin'],[user,'Coupon User'],[other,'Coupon Other']]) await store.query('insert into auth.users(id,email,raw_user_meta_data) values($1,$2,$3::jsonb)',[id,`${name.replace(' ','')}@example.test`,JSON.stringify({full_name:name,whatsapp:'21999999999'})]);
+  await store.query('update public.profiles set is_admin=true where id=$1',[admin]);
+  catalogId=(await store.query("select id from public.products where name='Drone inteligente'")).rows[0].id;
+  await store.exec('set role authenticated');
+  await identity(user);
+  await assert.rejects(save(base('DENIED001')),/negado/);
+  await assert.rejects(store.query('select public.coupon_admin_list()'),/negado/);
+  await assert.rejects(store.query('select * from public.coupons'),/permission denied/);
+  await store.exec('reset role');await identity(admin);
+  const created=await save(base('COUPON01'));assert(created.id);
+  await assert.rejects(save(base('COUPON01')),/duplicate key/);
+  const listing=(await store.query('select public.coupon_admin_list() result')).rows[0].result;
+  assert.equal(listing.length,1);assert.equal(listing[0].options.length,3);
+  const byKind=Object.fromEntries(listing[0].options.map(o=>[o.kind,o]));
+  assert.equal(byKind.custom.price_cents,12000);assert.equal(byKind.product.daily_bps,325);assert.equal(byKind.custom.message,'Produto escolhido');
+  await assert.rejects(save({...base('INVALID01'),max_selections:1,options:[{kind:'balance',amount_cents:1000001}]}),/Saldo inválido/);
+  await assert.rejects(save({...base('INVALID02'),max_selections:1,options:[{kind:'product',product_id:catalogId,daily_bps:5,duration_days:2}]}),/Condições do produto/);
+  await assert.rejects(save({...base('INVALID03'),max_selections:1,options:[{kind:'product',product_id:catalogId,price_cents:1,daily_bps:5,duration_days:2,return_principal:true}]}),/Preço do produto/);
+  await assert.rejects(save({...base('INVALID04'),code:'abc'}),/Código inválido/);
+  assert.equal((await store.query('select count(*) n from public.products where coupon_only')).rows[0].n,1);
+  assert(!(await store.query('select public.app_snapshot(true) result')).rows[0].result.products.some(p=>p.id===byKind.custom.product_id));
+  await assert.rejects(save({id:created.id,active:false,options:[]}),/Apenas o estado ativo/);
+  await save({id:created.id,active:false});
+  await identity(user);await assert.rejects(preview('COUPON01'),/indisponível/);
+  await identity(admin);await save({id:created.id,active:true});
+  await identity(user);const visible=await preview('coupon01');assert.equal(visible.remaining_user,2);assert.equal(visible.options.length,3);
+  assert(!(await store.query('select public.app_snapshot(false) result')).rows[0].result.products.some(p=>p.id===byKind.custom.product_id));
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id,byKind.balance.id]),/repetidas/);
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id,byKind.product.id,byKind.custom.id]),/excedidas/);
+  const foreign=await identity(admin).then(()=>save({...base('FOREIGN01'),max_selections:1,options:[{kind:'balance',amount_cents:100}]}));
+  await identity(user);const foreignOption=(await preview('FOREIGN01')).options[0].id;
+  await assert.rejects(redeem('COUPON01',[foreignOption]),/inválida/);
+  const before=(await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents;
+  const rid=req();let first;
+  await store.exec('set role authenticated');
+  try{
+   first=await redeem('COUPON01',[byKind.balance.id,byKind.product.id],rid);
+   assert.deepEqual(first.rewards.map(r=>r.kind).sort(),['balance','product']);assert.equal(first.rewards.find(r=>r.kind==='balance').message,'Saldo bônus');
+   assert.deepEqual(await redeem('COUPON01',[byKind.product.id,byKind.balance.id],rid),first);
+   await assert.rejects(redeem('FOREIGN01',[foreignOption],rid),/reutilizado/);
+  }finally{await store.exec('reset role');}
+  assert.equal(Number((await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents)-Number(before),4500);
+  const second=await redeem('COUPON01',[byKind.custom.id]);assert.equal(second.rewards[0].kind,'custom');assert.equal(second.rewards[0].message,'Produto escolhido');
+  const positions=(await store.query('select * from public.positions where user_id=$1 order by principal_cents',[user])).rows;
+  assert.equal(positions.length,2);assert(positions.every(p=>p.payer_id===admin));
+  const gifted=positions.find(p=>p.product_id===catalogId),exclusive=positions.find(p=>p.product_id===byKind.custom.product_id);
+  assert.equal(gifted.daily_bps,325);assert.equal(gifted.duration_days,9);assert.equal(gifted.return_principal,false);
+  assert.equal(exclusive.daily_bps,270);assert.equal(exclusive.return_principal,true);
+  await store.query('update public.products set daily_bps=9000,duration_days=1 where id=any($1::uuid[])',[[catalogId,byKind.custom.product_id]]);
+  await store.query("update public.positions set created_at=now()-interval '10 days' where user_id=$1",[user]);
+  const beforeYield=Number((await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents);
+  await store.query('select public.process_yields()');
+  assert.equal(Number((await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents)-beforeYield,715*9+324*7+12000);
+  assert.deepEqual((await store.query('select principal_returned,earned_cents from public.positions where user_id=$1 order by principal_cents',[user])).rows.map(p=>p.principal_returned),[true,false]);
+  assert.equal((await store.query('select count(*) n from public.ledger where user_id=$1 and kind=$2',[user,'principal_return'])).rows[0].n,1);
+  assert.equal((await store.query('select first_purchase_at from public.profiles where id=$1',[user])).rows[0].first_purchase_at,null);
+  assert.equal((await store.query('select count(*) n from public.commissions')).rows[0].n,0);
+  assert.equal((await store.query('select rewards from public.coupon_redemptions where id=$1',[second.id])).rows[0].rewards[0].price_cents,12000);
+  await assert.rejects(preview('COUPON01'),/Limite de resgates/);
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id]),/Limite por conta/);
+  await identity(other);await redeem('COUPON01',[byKind.balance.id]);
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id]),/esgotado/);
+  await identity(admin);await save({id:created.id,active:false});
+  await identity(user);assert.deepEqual(await redeem('COUPON01',[byKind.balance.id,byKind.product.id],rid),first);
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id]),/indisponível/);
+  await identity(admin);await save({...base('EXPIRED01'),expires_at:'2020-01-01T00:00:00Z'});
+  await identity(user);await assert.rejects(preview('EXPIRED01'),/indisponível/);
+  await assert.rejects(redeem('EXPIRED01',[byKind.balance.id]),/indisponível/);
+  await identity(admin);await store.query('update public.profiles set blocked=true where id=$1',[user]);
+  await identity(user);await assert.rejects(preview('FOREIGN01'),/Conta indisponível/);
+  await assert.rejects(redeem('COUPON01',[byKind.balance.id,byKind.product.id],rid),/Conta indisponível/);
+  await identity(admin);assert.equal((await store.query("select count(*) n from public.admin_audit where action in ('coupon_create','coupon_toggle')")).rows[0].n,6);
+  assert.equal(foreign.code,'FOREIGN01');
+  await store.exec('reset role');await identity('');await store.exec('set role anon');
+  await assert.rejects(store.query('select public.coupon_admin_save($1::jsonb)',['{}']),/permission denied/);
+  await assert.rejects(store.query('select public.coupon_preview($1)',['COUPON01']),/permission denied/);
+  await store.exec('reset role');
+ }finally{await store.close();}
+});
+
 await test('Terms upgrade preserves existing contracts and customized catalog entries',async()=>{
  const upgrade=new PGlite();
  try{
@@ -313,11 +430,13 @@ await test('Tracked installation records only applied migrations and rejects an 
  const sql=await trackedInstallationSql();const fresh=new PGlite();
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
-  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),['202610060001','202610060002','202610060003','202610060004','202610070001','202610070002','202610070003','202610070004']);
+  const versions=(await readdir(new URL('../supabase/migrations/',import.meta.url))).filter(x=>/^\d+_.+\.sql$/.test(x)).map(x=>x.split('_')[0]).sort();
+  assert.equal(versions.length,10);
+  assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),versions);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,8);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,10);
  }finally{await fresh.close();}
 });
 
@@ -330,7 +449,7 @@ await test('Complete SQL installer executes atomically and refuses a second inst
   await fresh.exec(bootstrap);await fresh.exec(sql);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   const permissions=(await fresh.query("select relname,relrowsecurity,has_table_privilege('authenticated',oid,'UPDATE') as direct_write from pg_class where relnamespace='public'::regnamespace and relkind='r'")).rows;
-  assert.equal(permissions.length,13);assert(permissions.every(p=>p.relrowsecurity&&!p.direct_write));
+  assert.equal(permissions.length,16);assert(permissions.every(p=>p.relrowsecurity&&!p.direct_write));
   await fresh.exec(await readFile(new URL('../supabase/sql/03_verificar_instalacao.sql',import.meta.url),'utf8'));
   await assert.rejects(fresh.exec(sql),/já instalada/);await fresh.exec('rollback');
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);

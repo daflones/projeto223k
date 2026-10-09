@@ -5,7 +5,7 @@ const w=new Window({url:'https://preview.example.test'});globalThis.window=w;glo
 w.scrollTo=()=>{};globalThis.setInterval=()=>0;globalThis.setTimeout=(fn)=>0;
 const proto=w.HTMLDialogElement.prototype;proto.showModal=function(){this.open=true;this.setAttribute('open','');};proto.close=function(){this.open=false;this.removeAttribute('open');};
 w.document.body.innerHTML='<div id="app"></div>';
-let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,toCents,dailyYield,payout} from './src/lib/store.js';");
+let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,couponPreview,couponRedeem,couponAdminList,couponAdminSave,toCents,dailyYield,payout} from './src/lib/store.js';");
 // store relies on Vite import.meta.env. Use its source transformed solely for this test.
 let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replaceAll('import.meta.env.DEV','true').replace("'../../supabase/","'./supabase/").replace("'./demo.js'","'./src/lib/demo.js'");
 const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'");await writeFile(base+'/smoke-main.mjs',main);
@@ -31,6 +31,7 @@ try{
  assert.equal((await store.snapshot(true)).deposits.length,0);assert.equal((await store.snapshot(true)).withdrawals.length,0);
  await click('[data-action=navigate][data-route=wallet]');
  assert(w.document.querySelector('.wallet-rules').textContent.includes('R$35 a R$5.000'));assert(w.document.querySelector('.wallet-rules').textContent.includes('R$30 a R$10.000'));
+ assert.equal(w.document.querySelector('.wallet-rules .status'),null);assert(!w.document.querySelector('.wallet-rules').textContent.includes('aprovação administrativa'));
  await click('[data-action=deposit]');assert.equal(w.document.querySelector('[name=amount]').min,'35');assert.equal(w.document.querySelector('[name=amount]').max,'5000');
  for(const amount of ['34.99','5000.01']){w.document.querySelector('[name=amount]').value=amount;await submit();assert(w.document.querySelector('#modal').open);assert.match(w.document.querySelector('.form-error').textContent,/Depósito entre R\$35 e R\$5\.000/);assert.equal((await store.snapshot(true)).deposits.length,0);}
  w.document.querySelector('[name=amount]').value='35';await submit();assert.equal((await store.snapshot(true)).deposits[0].amount_cents,3500);await click('[data-action=check-deposit]');
@@ -83,5 +84,11 @@ try{
  // Role restoration becomes visible after a normal refresh.
  state.profile.is_admin=true;await click('[data-action=refresh]');
  await click('[data-action=navigate][data-route=admin]');assert(w.document.querySelector('.admin-tabs'));
- console.log('DOM smoke: routes/admin/dialogs/payment flows, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
+ await click('[data-action=admin-tab][data-tab=coupons]');await click('[data-action=coupon-create]');
+ w.document.querySelector('#modal [name=code]').value='TESTE2026';w.document.querySelector('#modal [name=max_total]').value='2';w.document.querySelector('#modal [name=max_per_user]').value='2';w.document.querySelector('#modal [name=max_selections]').value='2';
+ await click('#add-coupon-option');const rows=[...w.document.querySelectorAll('[data-coupon-option]')];rows[0].querySelector('[name=amount]').value='5';rows[1].querySelector('[name=kind]').value='custom';rows[1].querySelector('[name=kind]').dispatchEvent(new w.Event('change',{bubbles:true}));rows[1].querySelector('[name=name]').value='Contrato teste';rows[1].querySelector('[name=price]').value='70';rows[1].querySelector('[name=rate]').value='5';rows[1].querySelector('[name=duration_days]').value='10';
+ await submit();assert(w.document.querySelector('.admin-tabs').textContent.includes('Cupons'));assert(w.document.querySelector('.page').textContent.includes('TESTE2026'));
+ await click('[data-action=navigate][data-route=dashboard]');await click('[data-action=coupon]');w.document.querySelector('#modal [name=code]').value='TESTE2026';await submit();assert(w.document.querySelector('#modal').textContent.includes('Contrato teste'),w.document.querySelector('#modal').textContent);w.document.querySelectorAll('#modal [name=reward]').forEach(x=>x.checked=true);await submit();
+ assert(w.document.querySelector('#modal').textContent.includes('Cupom resgatado'));assert.equal((await store.snapshot(true)).couponRedemptions.length,1);
+ console.log('DOM smoke: routes/admin/dialogs/payment flows, coupon selection/redemption, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
 }finally{await unlink(base+'/smoke-store.mjs');await unlink(base+'/smoke-main.mjs');}
