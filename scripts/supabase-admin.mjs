@@ -231,6 +231,10 @@ try {
       exists(select 1 from pg_index i join pg_class c on c.oid=i.indexrelid where c.relname='withdrawals_one_active_per_day' and i.indisunique and i.indpred is not null and pg_get_expr(i.indpred,i.indrelid) not ilike '%failed%' and pg_get_expr(i.indpred,i.indrelid) not ilike '%rejected%') as partial_unique,
       not exists(select 1 from pg_constraint where conrelid='public.withdrawals'::regclass and conname='withdrawals_user_id_day_key_key') as old_constraint_removed,
       position('status not in (''failed'',''rejected'')' in pg_get_functiondef('public.app_action_internal(text,jsonb)'::regprocedure))>0 as failed_retry_enabled`) : [];
+    const positionOverview = history.some(m=>m.version==='202610090003') ? await query(`select
+      exists(select 1 from pg_proc where oid='public.admin_active_position_counts()'::regprocedure and prosecdef) as private_function_present,
+      not has_function_privilege('authenticated','public.admin_active_position_counts()','EXECUTE') as user_denied,
+      position('position_counts' in pg_get_functiondef('public.app_snapshot(boolean)'::regprocedure))>0 as in_admin_snapshot`) : [];
     const counts = await query(`select
       (select count(*) from auth.users) as users,
       (select count(*) from public.profiles where is_admin) as admins,
@@ -238,7 +242,8 @@ try {
       (select count(*) from public.deposits) as deposits,
       (select count(*) from public.withdrawals) as withdrawals,
       (select count(*) from public.ledger) as ledger_entries`);
-    console.log(JSON.stringify({tables,functions,settings,catalog,history,limits,retryRule,counts},null,2));
+    console.log(JSON.stringify({tables,functions,settings,catalog,history,limits,retryRule,positionOverview,counts},null,2));
+    if (positionOverview.length && (!positionOverview[0].private_function_present || !positionOverview[0].user_denied || !positionOverview[0].in_admin_snapshot)) throw new Error('Resumo administrativo de produtos não verificado.');
     if (retryRule.length && (!retryRule[0].partial_unique || !retryRule[0].old_constraint_removed || !retryRule[0].failed_retry_enabled)) throw new Error('Regra de nova tentativa de saque não verificada.');
     const couponsInstalled=history.some(m=>m.version==='202610090002');
     if (tables.length!==(couponsInstalled?16:13) || tables.some(t=>!t.relrowsecurity||t.anon_access||t.user_access)

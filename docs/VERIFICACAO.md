@@ -64,3 +64,7 @@ Verificação: 50 testes locais, smoke UI, typecheck Edge e build passaram. Cons
 ## Cupons — 09/10/2026
 
 O administrador pode criar códigos com mensagem geral/opcional por recompensa, prazo opcional, limite global, limite por conta e até N escolhas distintas por resgate (1–10). Recompensas: saldo em centavos, produto existente com termos definidos no cupom ou contrato exclusivo fora do catálogo. A criação é auditada e os termos ficam imutáveis após a emissão; é possível ativar/desativar, não reescrever resgates passados. O usuário confere o código e escolhe no Dashboard ou Carteira. Resgates são atômicos e idempotentes no banco: concessão de saldo usa ledger, produtos usam posição com termos gravados, sem compra nem comissão. Não há cupons pré-criados ou créditos de teste no projeto real.
+
+## Resumo administrativo por origem — 09/10/2026
+
+A migração `202610090003` acrescenta ao snapshot exclusivo do admin as contagens de posições ativas resgatadas por cupom (IDs registrados nos resgates) e compradas pelo próprio usuário (lançamento `purchase` no mesmo instante transacional da posição, com pagador igual ao dono). Presentes, concessões administrativas e posições antigas cuja origem não possa ser comprovada ficam fora das duas contagens, em vez de serem classificadas como compras. Os dois números são mostrados separadamente no Resumo; não alteram saldos nem posições.

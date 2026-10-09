@@ -90,5 +90,9 @@ try{
  await submit();assert(w.document.querySelector('.admin-tabs').textContent.includes('Cupons'));assert(w.document.querySelector('.page').textContent.includes('TESTE2026'));
  await click('[data-action=navigate][data-route=dashboard]');await click('[data-action=coupon]');w.document.querySelector('#modal [name=code]').value='TESTE2026';await submit();assert(w.document.querySelector('#modal').textContent.includes('Contrato teste'),w.document.querySelector('#modal').textContent);w.document.querySelectorAll('#modal [name=reward]').forEach(x=>x.checked=true);await submit();
  assert(w.document.querySelector('#modal').textContent.includes('Cupom resgatado'));assert.equal((await store.snapshot(true)).couponRedemptions.length,1);
- console.log('DOM smoke: routes/admin/dialogs/payment flows, coupon selection/redemption, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
+ await click('#modal [data-action=close]');await click('[data-action=navigate][data-route=admin]');await click('[data-action=admin-tab][data-tab=overview]');
+ const metrics=[...w.document.querySelectorAll('.admin-metrics .metric')];assert.equal(metrics.length,4);
+ assert.equal(metrics[1].querySelector('span').textContent,'Produtos ativos · compras próprias');assert.equal(metrics[2].querySelector('span').textContent,'Produtos ativos · cupons');
+ assert.equal(Number(metrics[2].querySelector('strong').textContent),1);
+ console.log('DOM smoke: routes/admin/dialogs/payment flows, coupon selection/redemption, separate admin product counts, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
 }finally{await unlink(base+'/smoke-store.mjs');await unlink(base+'/smoke-main.mjs');}
