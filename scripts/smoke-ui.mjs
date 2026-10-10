@@ -5,10 +5,10 @@ const w=new Window({url:'https://preview.example.test'});globalThis.window=w;glo
 w.scrollTo=()=>{};globalThis.setInterval=()=>0;globalThis.setTimeout=(fn)=>0;
 const proto=w.HTMLDialogElement.prototype;proto.showModal=function(){this.open=true;this.setAttribute('open','');};proto.close=function(){this.open=false;this.removeAttribute('open');};
 w.document.body.innerHTML='<div id="app"></div>';
-let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,couponPreview,couponRedeem,couponAdminList,couponAdminSave,welcomeCouponStatus,toCents,dailyYield,payout} from './src/lib/store.js';");
+let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace("from './lib/store.js';","from './smoke-store.mjs';");
 // store relies on Vite import.meta.env. Use its source transformed solely for this test.
 let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replaceAll('import.meta.env.DEV','true').replace("'../../supabase/","'./supabase/").replace("'./demo.js'","'./src/lib/demo.js'");
-const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'").replace("'./lib/notices.js'","'./src/lib/notices.js'");await writeFile(base+'/smoke-main.mjs',main);
+const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'").replace("'./lib/notices.js'","'./src/lib/notices.js'").replace("'./lib/admin-ui.js'","'./src/lib/admin-ui.js'");await writeFile(base+'/smoke-main.mjs',main);
 try{
  await import(pathToFileURL(base+'/smoke-main.mjs').href);w.document.querySelector('#demo-button').click();
  const tick=()=>new Promise(resolve=>nativeTimeout(resolve,20));
@@ -24,7 +24,7 @@ try{
  assert(!w.document.querySelector('#modal').open,'Acknowledged notice does not reopen on dashboard navigation');
  for(const act of ['deposit','withdraw','profile','whatsapp']){w.document.querySelector(`[data-action=${act}]`).click();await tick();if(!w.document.querySelector('#modal').open)throw new Error('Modal failed '+act);w.document.querySelector('#modal').close();}
  w.document.querySelector('[data-action=navigate][data-route=admin]').click();await tick();
- for(const tab of ['products','users','positions','withdrawals','settings','audit','overview']){w.document.querySelector(`[data-action=admin-tab][data-tab=${tab}]`).click();await tick();if(!w.document.querySelector('.admin-tabs'))throw new Error('Admin tab failed');}
+ for(const tab of ['products','users','positions','withdrawals','deposits','coupons','settings','audit','overview']){w.document.querySelector(`[data-action=admin-tab][data-tab=${tab}]`).click();await tick();if(!w.document.querySelector('.admin-tabs'))throw new Error('Admin tab failed');}
 
  // Confirm purchases, deposit simulation and withdrawal approval flows in the actual UI.
  const click=async sel=>{const el=w.document.querySelector(sel);if(!el)throw new Error('Missing control '+sel);el.click();await tick();};
@@ -116,5 +116,78 @@ try{
  await click('#modal [data-action=close]');await click('[data-action=refresh]');
  assert.equal(w.document.querySelector('.welcome-card'),null,'Already redeemed remains hidden after another server read');
  assert(w.document.querySelector('.community-card a').href.endsWith('BaQG9FSKZNYJXnJxNzVcyx'));
- console.log('DOM smoke: routes/admin/dialogs/payment flows, coupon selection/redemption, separate admin product counts, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
+ // Admin pages work with histories larger than one screen, while user details
+ // still expose independent affiliate levels, complete products and paid commissions.
+ state=await store.snapshot(true);
+ state.profile.whatsapp='(21) 99999-0000';state.profile.email='admin@example.test';
+ state.profile.created_at='2026-10-01T12:00:00.000Z';state.profile.email_confirmed_at=state.profile.created_at;
+ const now=new Date().toISOString();
+ for(let i=0;i<31;i++)state.team.push({id:'qa-user-'+i,full_name:'Usuário QA '+String(i).padStart(2,'0'),email:'qa'+i+'@example.test',whatsapp:'2199999'+String(i).padStart(4,'0'),referred_by:state.profile.id,level:1,created_at:now,products:[],wallet:{available_cents:0,reserved_cents:0}});
+ Object.assign(state.team.find(t=>t.id==='team-1'),{whatsapp:'21999991111',email:'camila@example.test',referred_by:state.profile.id});
+ Object.assign(state.team.find(t=>t.id==='team-2'),{whatsapp:'21999992222',referred_by:'team-1'});
+ Object.assign(state.team.find(t=>t.id==='team-3'),{whatsapp:'21999993333',referred_by:'team-2'});
+ for(let i=0;i<27;i++)state.positions.push({...state.products[0],id:'qa-position-'+i,product_id:state.products[0].id,user_id:'team-1',payer_id:'team-1',source:'purchase',principal_cents:7000,earned_cents:0,paid_periods:0,return_principal:true,principal_returned:false,status:'active',created_at:now});
+ for(let i=0;i<3;i++)state.commissions.push({id:'qa-commission-'+i,user_id:state.profile.id,source_user_id:'team-'+(i+1),position_id:'qa-position-0',level:i+1,amount_cents:[1050,350,140][i],created_at:now});
+ for(let i=0;i<26;i++){
+  state.products.push({...state.products[0],id:'qa-product-'+i,name:'Catálogo QA '+i,created_at:now});
+  state.coupons.push({id:'qa-coupon-'+i,code:'QA-CUPOM-'+String(i).padStart(3,'0'),active:true,max_total:10,max_per_user:1,max_selections:1,options:[],created_at:now});
+  state.withdrawals.push({id:'qa-withdrawal-'+i,user_id:state.profile.id,status:'requested',amount_cents:3000,payout_cents:2850,fee_cents:150,pix_key:'12345678901',pix_key_type:'cpf',created_at:now});
+  state.deposits.push({id:'qa-deposit-'+i,user_id:state.profile.id,status:'completed',amount_cents:3500,created_at:now});
+  state.admin.audit.push({id:'qa-audit-'+i,action:'QA '+i,details:{},created_at:now});
+  state.admin.webhooks.push({delivery_id:'qa-event-'+i,event:'pix.received',status:'processed',created_at:now});
+ }
+ await click('[data-action=navigate][data-route=admin]');
+ for(const key of ['products','users','positions','withdrawals','deposits','coupons']){
+  await click(`.page [data-action=admin-tab][data-tab=${key}]`);
+  assert.equal(w.document.querySelectorAll('.page tbody tr').length,20,key+' is limited to its first 20 records');
+  const firstRecord=w.document.querySelector('.page tbody tr').innerHTML;
+  await click(`.page [data-action=admin-page][data-key=${key}][data-page="2"]`);
+  assert(w.document.querySelector('.page .admin-pagination [role=status]').textContent.includes('Página 2'),key+' next page');
+  assert.notEqual(w.document.querySelector('.page tbody tr').innerHTML,firstRecord,key+' second page has different records');
+ }
+ // Audit records and webhook deliveries paginate separately within the same tab.
+ await click('.page [data-action=admin-tab][data-tab=audit]');
+ await click('.page [data-action=admin-page][data-key=audit][data-page="2"]');
+ assert(w.document.querySelectorAll('.page .admin-pagination [role=status]')[0].textContent.includes('Página 2'));
+ assert(w.document.querySelectorAll('.page .admin-pagination [role=status]')[1].textContent.includes('Página 1'));
+ await click('.page [data-action=admin-page][data-key=webhooks][data-page="2"]');
+ assert(w.document.querySelectorAll('.page .admin-pagination [role=status]')[1].textContent.includes('Página 2'));
+ // A page change clears selection; approve-all always includes off-page requests.
+ await click('.page [data-action=admin-tab][data-tab=withdrawals]');
+ await click('.page [data-action=admin-page][data-key=withdrawals][data-page="1"]');
+ w.document.querySelector('.withdraw-select').checked=true;
+ await click('.page [data-action=admin-page][data-key=withdrawals][data-page="2"]');
+ assert.equal(w.document.querySelectorAll('.withdraw-select:checked').length,0);
+ await click('.page [data-action=approve-all]');assert(w.document.querySelector('#modal').textContent.includes('Total pendente: 26'));await click('#modal [data-action=close]');
+ // Searching from page two resets to page one; WhatsApp remains visible with email.
+ await click('.page [data-action=admin-tab][data-tab=users]');
+ let search=w.document.querySelector('form[data-admin-search=users]');search.querySelector('[name=search]').value='Eduardo';search.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();
+ assert.equal(w.document.querySelectorAll('.page tbody tr').length,1);assert(w.document.querySelector('.page .admin-pagination').textContent.includes('Página 1'));
+ assert(w.document.querySelector('.page tbody tr').textContent.includes('admin@example.test'));
+ assert.equal(w.document.querySelector('.page tbody tr .admin-whatsapp').href,'https://wa.me/5521999990000');
+ await click('.page [data-action=admin-user][data-id=demo-user]');
+ assert(w.document.querySelector('#modal').classList.contains('admin-user-modal'));assert.equal(w.document.querySelectorAll('.admin-level-card').length,3);
+ assert(w.document.querySelector('.admin-profile-metrics').textContent.includes('15,40'));
+ await click('#modal [data-action=admin-profile-level][data-level="1"]');
+ assert.equal(w.document.querySelectorAll('#modal tbody tr').length,20);
+ const size=w.document.querySelector('#modal [data-admin-size]');size.value='50';size.dispatchEvent(new w.Event('change',{bubbles:true}));await tick();await tick();
+ assert.equal(w.document.querySelectorAll('#modal tbody tr').length,32);
+ assert(w.document.querySelector('#modal tbody').textContent.includes('Camila Santos'));
+ await click('#modal [data-action=admin-profile-level][data-level="2"]');assert.equal(w.document.querySelectorAll('#modal tbody tr').length,1);assert(w.document.querySelector('#modal tbody').textContent.includes('Lucas Oliveira'));
+ await click('#modal [data-action=admin-profile-level][data-level="3"]');assert.equal(w.document.querySelectorAll('#modal tbody tr').length,1);assert(w.document.querySelector('#modal tbody').textContent.includes('Marina Costa'));
+ await click('#modal [data-action=admin-profile-tab][data-tab=commissions]');
+ assert.equal(w.document.querySelectorAll('#modal tbody tr').length,3);
+ const filter=w.document.querySelector('#modal [data-admin-status]');filter.value='2';filter.dispatchEvent(new w.Event('change',{bubbles:true}));await tick();await tick();
+ assert.equal(w.document.querySelectorAll('#modal tbody tr').length,1);assert(w.document.querySelector('#modal tbody').textContent.includes('Lucas Oliveira'));assert(w.document.querySelector('#modal tbody').textContent.includes('3,50'));
+ await click('#modal [data-action=admin-profile-tab][data-tab=affiliates]');
+ await click('#modal [data-action=admin-profile-level][data-level="1"]');
+ await click('#modal [data-action=admin-affiliate-products][data-id=team-1]');
+ assert(w.document.querySelector('#modal h2').textContent.includes('Camila Santos'));assert.equal(w.document.querySelectorAll('#modal tbody tr').length,20);
+ await click('#modal [data-action=admin-page][data-key=positions][data-page="2"]');assert.equal(w.document.querySelectorAll('#modal tbody tr').length,7);
+ await click('#modal [data-action=admin-profile-tab][data-tab=edit]');
+ w.document.querySelector('#modal [name=full_name]').value='Camila QA atualizada';w.document.querySelector('#modal [name=whatsapp]').value='21999994444';await submit();
+ assert.equal(state.team.find(t=>t.id==='team-1').full_name,'Camila QA atualizada');assert.equal(state.team.find(t=>t.id==='team-1').whatsapp,'21999994444');
+ // Existing notices remain untouched after the admin update.
+ await click('[data-action=navigate][data-route=dashboard]');assert.equal(w.document.querySelector('.welcome-card'),null);assert(w.document.querySelector('.community-card a').href.endsWith('BaQG9FSKZNYJXnJxNzVcyx'));
+ console.log('DOM smoke: user/payment/coupon flows, maturity and gifts, role revocation, all admin pages, independent audit/webhook pagination, detailed profiles, three affiliate levels, complete affiliate products and actual commissions passed.');
 }finally{await unlink(base+'/smoke-store.mjs');await unlink(base+'/smoke-main.mjs');}

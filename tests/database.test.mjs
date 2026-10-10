@@ -460,12 +460,12 @@ await test('Tracked installation records only applied migrations and rejects an 
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
   const versions=(await readdir(new URL('../supabase/migrations/',import.meta.url))).filter(x=>/^\d+_.+\.sql$/.test(x)).map(x=>x.split('_')[0]).sort();
-  assert.equal(versions.length,12);
+  assert.equal(versions.length,13);
   assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),versions);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,12);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,13);
  }finally{await fresh.close();}
 });
 

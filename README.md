@@ -4,6 +4,8 @@ Frontend Vite/JavaScript; autenticação, banco e backend financeiro em Supabase
 
 Atualização de comunidade e boas-vindas: **[docs/ATUALIZACAO-GRUPO-E-CUPOM.md](docs/ATUALIZACAO-GRUPO-E-CUPOM.md)**. Inclui o novo grupo oficial, consulta privada de resgates e aviso de `ELETRIFY` para contas elegíveis.
 
+Atualização do admin: **[docs/ATUALIZACAO-ADMIN.md](docs/ATUALIZACAO-ADMIN.md)**. Inclui paginação no Supabase, busca/filtros, WhatsApp e perfil com equipe de três níveis, produtos dos afiliados e comissões recebidas. Continuidade no Devin: **[docs/DEVIN-PUBLICAR-ADMIN.md](docs/DEVIN-PUBLICAR-ADMIN.md)**.
+
 ## Acesso rápido
 
 ```sh
@@ -29,7 +31,7 @@ Sem configuração Supabase, clique **Explorar demonstração completa**. Navegu
 Guia completo, com comandos e ordem dos arquivos: **[docs/INSTALACAO-SUPABASE.md](docs/INSTALACAO-SUPABASE.md)**.
 
 1. Criar um projeto Supabase e configurar SMTP/Email confirm.
-2. `supabase login`, `supabase link --project-ref REF` e `supabase db push` para aplicar as cinco migrações, incluindo `202610070001_launch_rules.sql`. Alternativa para banco novo: colar `supabase/INSTALAR_ELETRIFY.sql` inteiro no SQL Editor. Instalação manual exige registrar o histórico antes de usar CLI depois; veja o guia. Não reaplicar migração já aplicada.
+2. `supabase login`, `supabase link --project-ref REF` e `supabase db push` para aplicar as migrações pendentes em `supabase/migrations`, conferindo o histórico primeiro. Alternativa para banco novo: colar `supabase/INSTALAR_ELETRIFY.sql` inteiro no SQL Editor. Instalação manual exige registrar o histórico antes de usar CLI depois; veja o guia. Não reaplicar migração já aplicada.
 3. Configurar Site URL e Redirect URLs para a origem final, a origem com `?flow=recovery` e localhost de desenvolvimento. Templates em `supabase/templates`.
 4. Cadastrar seu usuário e confirmar e-mail. Informar somente seu UUID em `supabase/sql/01_promover_admin.sql` e executar no SQL Editor como operador. Nunca atribuir admin com dados enviados no cadastro.
 5. Copiar `supabase/.env.functions.example` para um arquivo privado; configurar chave MercosulPay, segredo do webhook, segredo do worker, APP_ORIGINS e APP_URL. `supabase secrets set --env-file ARQUIVO_PRIVADO`.
