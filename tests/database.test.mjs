@@ -9,6 +9,7 @@ const auto=await readFile(new URL('../supabase/migrations/202610070004_auto_appr
 const retry=await readFile(new URL('../supabase/migrations/202610090001_retry_failed_withdrawals.sql',import.meta.url),'utf8');
 const coupons=await readFile(new URL('../supabase/migrations/202610090002_coupons.sql',import.meta.url),'utf8');
 const positionCounts=await readFile(new URL('../supabase/migrations/202610090003_admin_position_counts.sql',import.meta.url),'utf8');
+const notices=await readFile(new URL('../supabase/migrations/202610100001_community_and_welcome_notice.sql',import.meta.url),'utf8');
 const bootstrap=`create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,raw_user_meta_data jsonb);create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;`;
 let db;
 const ids={root:'00000000-0000-4000-8000-000000000001',admin:'00000000-0000-4000-8000-000000000002',child:'00000000-0000-4000-8000-000000000003',grand:'00000000-0000-4000-8000-000000000004'};
@@ -459,19 +460,19 @@ await test('Tracked installation records only applied migrations and rejects an 
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
   const versions=(await readdir(new URL('../supabase/migrations/',import.meta.url))).filter(x=>/^\d+_.+\.sql$/.test(x)).map(x=>x.split('_')[0]).sort();
-  assert.equal(versions.length,11);
+  assert.equal(versions.length,12);
   assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),versions);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,11);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,12);
  }finally{await fresh.close();}
 });
 
 await test('Complete SQL installer executes atomically and refuses a second installation',async()=>{
- const {installationSql}=await import('../scripts/build-supabase-sql.mjs');
+ const {installationSql,normalizeSqlLineEndings}=await import('../scripts/build-supabase-sql.mjs');
  const sql=await readFile(new URL('../supabase/INSTALAR_ELETRIFY.sql',import.meta.url),'utf8');
- assert.equal(sql,await installationSql(),'Generate the SQL bundle after editing migrations');
+ assert.equal(normalizeSqlLineEndings(sql),await installationSql(),'Generate the SQL bundle after editing migrations');
  const fresh=new PGlite();
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
@@ -490,4 +491,51 @@ await test('Complete SQL installer executes atomically and refuses a second inst
   assert.equal((await fresh.query('select is_admin from public.profiles where id=$1',[ids.root])).rows[0].is_admin,true);
   assert.equal((await fresh.query("select count(*) n from public.admin_audit where action='operator_grant_admin'")).rows[0].n,1);
  }finally{await fresh.close();}
+});
+
+
+await test('Welcome coupon eligibility is private, persistent, and never issues rewards',async()=>{
+ const store=new PGlite();
+ const status=async()=>(await store.query('select public.welcome_coupon_status() result')).rows[0].result;
+ const identity=async(id)=>store.query("select set_config('request.jwt.claim.sub',$1,false)",[id]);
+ try{
+  await store.exec(bootstrap);
+  for(const sql of [migration,catalog,terms,security,launch,batch,auto,retry,coupons,positionCounts])await store.exec(sql);
+  const beforeSettings=(await store.query('select * from public.platform_settings')).rows[0];
+  await store.exec(notices);
+  const afterSettings=(await store.query('select * from public.platform_settings')).rows[0];
+  assert.equal(afterSettings.whatsapp_group,'https://chat.whatsapp.com/BaQG9FSKZNYJXnJxNzVcyx');
+  assert.deepEqual({...afterSettings,whatsapp_group:beforeSettings.whatsapp_group},beforeSettings);
+  await store.exec(notices);
+  assert.equal((await store.query("select count(*) n from public.admin_audit where action='community_group_update'")).rows[0].n,1);
+  const admin=ids.admin,user=ids.child,other=ids.grand;
+  for(const [id,name] of [[admin,'Admin'],[user,'Member'],[other,'Other']])await store.query('insert into auth.users(id,email,raw_user_meta_data) values($1,$2,$3::jsonb)',[id,name+'@example.test',JSON.stringify({full_name:name,whatsapp:'21999999999'})]);
+  await store.query('update public.profiles set is_admin=true where id=$1',[admin]);
+  await store.exec('set role anon');await assert.rejects(status(),/permission denied/);await store.exec('reset role');
+  await identity(user);await store.exec('set role authenticated');
+  assert.deepEqual(await status(),{code:'ELETRIFY',redeemed:false,coupon:null});
+  await assert.rejects(store.query('select * from public.coupon_redemptions'),/permission denied/);
+  await store.exec('reset role');await identity(admin);
+  const config={code:'ELETRIFY',max_total:3,max_per_user:2,max_selections:1,options:[{kind:'balance',amount_cents:500},{kind:'custom',name:'Produto de boas-vindas',category:'production',image:'/assets/patinete-bateria-componentes.png',price_cents:1000,daily_bps:500,duration_days:10,return_principal:true}]};
+  const created=(await store.query('select public.coupon_admin_save($1::jsonb) result',[JSON.stringify(config)])).rows[0].result;
+  await identity(user);await store.exec('set role authenticated');
+  const first=await status();assert.equal(first.redeemed,false);assert.equal(first.coupon.code,'ELETRIFY');assert.equal(first.coupon.options.length,2);
+  // A repeated read never grants balance or products.
+  await status();await store.exec('reset role');
+  assert.equal(Number((await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents),0);
+  assert.equal(Number((await store.query('select count(*) n from public.coupon_redemptions')).rows[0].n),0);
+  const option=first.coupon.options.find(o=>o.kind==='balance').id;
+  await identity(user);await store.exec('set role authenticated');
+  await store.query('select public.coupon_redeem($1,$2::uuid[],$3::uuid)',['ELETRIFY',[option],req()]);
+  assert.deepEqual(await status(),{code:'ELETRIFY',redeemed:true,coupon:null});
+  await identity(other);assert.equal((await status()).redeemed,false);assert((await status()).coupon);
+  await store.exec('reset role');
+  assert.equal(Number((await store.query('select available_cents from public.wallets where user_id=$1',[user])).rows[0].available_cents),500);
+  await identity(admin);await store.query('select public.coupon_admin_save($1::jsonb)',[JSON.stringify({id:created.id,active:false})]);
+  await identity(other);assert.deepEqual(await status(),{code:'ELETRIFY',redeemed:false,coupon:null});
+  await identity(user);assert.equal((await status()).redeemed,true);
+  await store.query('update public.profiles set blocked=true where id=$1',[other]);
+  await identity(other);await assert.rejects(status(),/Conta indisponível/);
+  await identity(null);await assert.rejects(status(),/Autenticação necessária/);
+ }finally{await store.close();}
 });

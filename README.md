@@ -2,6 +2,8 @@
 
 Frontend Vite/JavaScript; autenticação, banco e backend financeiro em Supabase; pagamentos Pix pela MercosulPay; servidor Node e Docker para EasyPanel.
 
+Atualização de comunidade e boas-vindas: **[docs/ATUALIZACAO-GRUPO-E-CUPOM.md](docs/ATUALIZACAO-GRUPO-E-CUPOM.md)**. Inclui o novo grupo oficial, consulta privada de resgates e aviso de `ELETRIFY` para contas elegíveis.
+
 ## Acesso rápido
 
 ```sh

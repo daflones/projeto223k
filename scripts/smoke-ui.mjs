@@ -5,16 +5,23 @@ const w=new Window({url:'https://preview.example.test'});globalThis.window=w;glo
 w.scrollTo=()=>{};globalThis.setInterval=()=>0;globalThis.setTimeout=(fn)=>0;
 const proto=w.HTMLDialogElement.prototype;proto.showModal=function(){this.open=true;this.setAttribute('open','');};proto.close=function(){this.open=false;this.removeAttribute('open');};
 w.document.body.innerHTML='<div id="app"></div>';
-let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,couponPreview,couponRedeem,couponAdminList,couponAdminSave,toCents,dailyYield,payout} from './src/lib/store.js';");
+let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace(/import \{.*\} from '\.\/lib\/store.js';/,"import {client,enterDemo,leaveDemo,isDemo,resetDemo,snapshot,action,payment,couponPreview,couponRedeem,couponAdminList,couponAdminSave,welcomeCouponStatus,toCents,dailyYield,payout} from './src/lib/store.js';");
 // store relies on Vite import.meta.env. Use its source transformed solely for this test.
 let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replaceAll('import.meta.env.DEV','true').replace("'../../supabase/","'./supabase/").replace("'./demo.js'","'./src/lib/demo.js'");
-const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'");await writeFile(base+'/smoke-main.mjs',main);
+const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'").replace("'./lib/notices.js'","'./src/lib/notices.js'");await writeFile(base+'/smoke-main.mjs',main);
 try{
  await import(pathToFileURL(base+'/smoke-main.mjs').href);w.document.querySelector('#demo-button').click();
  const tick=()=>new Promise(resolve=>nativeTimeout(resolve,20));
  for(let i=0;i<100&&!w.document.querySelector('.shell');i++)await tick();
  if(!w.document.querySelector('.shell'))throw new Error('Demo mode did not load');
+ assert(w.document.querySelector('#modal').open,'Community notice opens on the first dashboard');
+ assert.equal(w.document.querySelector('.community-join').href,'https://chat.whatsapp.com/BaQG9FSKZNYJXnJxNzVcyx');
+ assert(w.document.querySelector('#community-notice-message').textContent.includes('será desativado'));
+ w.document.querySelector('#modal [data-action=close]').click();
+ assert(!w.document.querySelector('#modal').open);
+
  for(const route of ['products','positions','team','wallet','admin','dashboard']){w.document.querySelector(`[data-action=navigate][data-route=${route}]`).click();await tick();if(!w.document.querySelector('.page h1'))throw new Error('Missing route '+route);}
+ assert(!w.document.querySelector('#modal').open,'Acknowledged notice does not reopen on dashboard navigation');
  for(const act of ['deposit','withdraw','profile','whatsapp']){w.document.querySelector(`[data-action=${act}]`).click();await tick();if(!w.document.querySelector('#modal').open)throw new Error('Modal failed '+act);w.document.querySelector('#modal').close();}
  w.document.querySelector('[data-action=navigate][data-route=admin]').click();await tick();
  for(const tab of ['products','users','positions','withdrawals','settings','audit','overview']){w.document.querySelector(`[data-action=admin-tab][data-tab=${tab}]`).click();await tick();if(!w.document.querySelector('.admin-tabs'))throw new Error('Admin tab failed');}
@@ -94,5 +101,20 @@ try{
  const metrics=[...w.document.querySelectorAll('.admin-metrics .metric')];assert.equal(metrics.length,4);
  assert.equal(metrics[1].querySelector('span').textContent,'Produtos ativos · compras próprias');assert.equal(metrics[2].querySelector('span').textContent,'Produtos ativos · cupons');
  assert.equal(Number(metrics[2].querySelector('strong').textContent),1);
+ // Advertise the real welcome coupon only for accounts that have never redeemed it.
+ await click('[data-action=navigate][data-route=admin]');
+ await store.couponAdminSave({code:'ELETRIFY',max_total:3,max_per_user:2,max_selections:1,options:[{kind:'balance',amount_cents:500},{kind:'custom',name:'Presente Eletrify',category:'production',image:'/assets/patinete-bateria-componentes.png',price_cents:1000,daily_bps:500,duration_days:10,return_principal:true}]});
+ await click('[data-action=navigate][data-route=dashboard]');
+ assert(w.document.querySelector('.welcome-card'));
+ assert(w.document.querySelector('.welcome-card').textContent.includes('5% ao dia por 10 dias'));
+ await click('.welcome-card [data-action=welcome-coupon]');
+ assert.equal(w.document.querySelector('#modal form').dataset.code,'ELETRIFY');
+ assert.equal(w.document.querySelectorAll('#modal [name=reward]').length,2);
+ w.document.querySelector('#modal [name=reward]').checked=true;await submit();
+ assert(w.document.querySelector('#modal').textContent.includes('Cupom resgatado'));
+ assert.equal(w.document.querySelector('.welcome-card'),null,'Welcome banner disappears after confirmed redemption');
+ await click('#modal [data-action=close]');await click('[data-action=refresh]');
+ assert.equal(w.document.querySelector('.welcome-card'),null,'Already redeemed remains hidden after another server read');
+ assert(w.document.querySelector('.community-card a').href.endsWith('BaQG9FSKZNYJXnJxNzVcyx'));
  console.log('DOM smoke: routes/admin/dialogs/payment flows, coupon selection/redemption, separate admin product counts, product terms, maturity/gifts and admin revocation/direct-route denial passed.');
 }finally{await unlink(base+'/smoke-store.mjs');await unlink(base+'/smoke-main.mjs');}

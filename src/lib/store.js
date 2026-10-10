@@ -13,6 +13,10 @@ export async function action(name,data={}){
  if(demoApi)return demoApi.action(name,data);
  const {data:out,error}=await client.rpc('app_action',{p_action:name,p_data:{...data,request_id:data.request_id||crypto.randomUUID()}});if(error)throw error;return out;
 }
+export async function welcomeCouponStatus(){
+ if(demoApi){const state=await demoApi.snapshot(false);const redeemed=state.couponRedemptions.some(r=>r.user_id===state.profile.id&&r.code==='ELETRIFY');let coupon=null;if(!redeemed){try{coupon=await demoApi.couponPreview('ELETRIFY');}catch{}}return {code:'ELETRIFY',redeemed,coupon};}
+ const {data,error}=await client.rpc('welcome_coupon_status');if(error)throw error;return data;
+}
 export async function couponPreview(code){if(demoApi)return demoApi.couponPreview(code);const {data,error}=await client.rpc('coupon_preview',{p_code:code});if(error)throw error;return data;}
 export async function couponRedeem(code,optionIds,requestId){if(demoApi)return demoApi.couponRedeem(code,optionIds,requestId);const {data,error}=await client.rpc('coupon_redeem',{p_code:code,p_option_ids:optionIds,p_request_id:requestId});if(error)throw error;return data;}
 export async function couponAdminList(){if(demoApi)return demoApi.couponAdminList();const {data,error}=await client.rpc('coupon_admin_list');if(error)throw error;return data;}
