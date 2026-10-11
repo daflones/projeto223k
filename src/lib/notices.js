@@ -1,26 +1,21 @@
-export const COMMUNITY_NOTICE = Object.freeze({
-  id: 'community-2026-10-10-BaQG9FSKZNYJXnJxNzVcyx',
-  url: 'https://chat.whatsapp.com/BaQG9FSKZNYJXnJxNzVcyx',
-});
-
 export const WELCOME_COUPON_CODE = 'ELETRIFY';
 
 // Acknowledgement is scoped to the announcement and the signed-in account.
 // Restricted storage must not prevent the dashboard from opening.
 export function createAnnouncementTracker(getStorage = () => globalThis.localStorage) {
   const acknowledged = new Set();
-  const keyFor = userId => 'eletrify:notice:' + COMMUNITY_NOTICE.id + ':' + userId;
+  const keyFor = (userId,noticeId) => 'eletrify:notice:' + noticeId + ':' + userId;
   return {
-    shouldShow(userId) {
-      if (typeof userId !== 'string' || !userId) return false;
-      const key = keyFor(userId);
+    shouldShow(userId,noticeId='legacy') {
+      if (typeof userId !== 'string' || !userId || typeof noticeId!=='string' || !noticeId) return false;
+      const key = keyFor(userId,noticeId);
       if (acknowledged.has(key)) return false;
       try { return getStorage()?.getItem(key) !== 'read'; }
       catch { return true; }
     },
-    acknowledge(userId) {
-      if (typeof userId !== 'string' || !userId) return;
-      const key = keyFor(userId);
+    acknowledge(userId,noticeId='legacy') {
+      if (typeof userId !== 'string' || !userId || typeof noticeId!=='string' || !noticeId) return;
+      const key = keyFor(userId,noticeId);
       acknowledged.add(key);
       try { getStorage()?.setItem(key, 'read'); } catch {}
     },

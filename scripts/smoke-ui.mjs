@@ -8,14 +8,14 @@ w.document.body.innerHTML='<div id="app"></div>';
 let main=await readFile(new URL('../src/main.js',import.meta.url),'utf8');main=main.replace("import './style.css';",'').replaceAll('import.meta.env.DEV','true').replace("from './lib/store.js';","from './smoke-store.mjs';");
 // store relies on Vite import.meta.env. Use its source transformed solely for this test.
 let st=await readFile(new URL('../src/lib/store.js',import.meta.url),'utf8');st=st.replaceAll('import.meta.env.VITE_SUPABASE_URL','undefined').replaceAll('import.meta.env.VITE_SUPABASE_ANON_KEY','undefined').replaceAll('import.meta.env.DEV','true').replace("'../../supabase/","'./supabase/").replace("'./demo.js'","'./src/lib/demo.js'");
-const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'").replace("'./lib/notices.js'","'./src/lib/notices.js'").replace("'./lib/admin-ui.js'","'./src/lib/admin-ui.js'");await writeFile(base+'/smoke-main.mjs',main);
+const base=process.cwd();const {writeFile,unlink}=await import('node:fs/promises');await writeFile(base+'/smoke-store.mjs',st);main=main.replace("'./src/lib/store.js'","'./smoke-store.mjs'").replace("'./lib/notices.js'","'./src/lib/notices.js'").replace("'./lib/admin-ui.js'","'./src/lib/admin-ui.js'").replace("'./lib/announcements.js'","'./src/lib/announcements.js'");await writeFile(base+'/smoke-main.mjs',main);
 try{
  await import(pathToFileURL(base+'/smoke-main.mjs').href);w.document.querySelector('#demo-button').click();
  const tick=()=>new Promise(resolve=>nativeTimeout(resolve,20));
  for(let i=0;i<100&&!w.document.querySelector('.shell');i++)await tick();
  if(!w.document.querySelector('.shell'))throw new Error('Demo mode did not load');
  assert(w.document.querySelector('#modal').open,'Community notice opens on the first dashboard');
- assert.equal(w.document.querySelector('.community-join').href,'https://chat.whatsapp.com/BaQG9FSKZNYJXnJxNzVcyx');
+ assert.equal(w.document.querySelector('.community-join').href,'https://chat.whatsapp.com/EVLODOy777bBwDFkjNQIni');
  assert(w.document.querySelector('#community-notice-message').textContent.includes('será desativado'));
  w.document.querySelector('#modal [data-action=close]').click();
  assert(!w.document.querySelector('#modal').open);
@@ -24,7 +24,7 @@ try{
  assert(!w.document.querySelector('#modal').open,'Acknowledged notice does not reopen on dashboard navigation');
  for(const act of ['deposit','withdraw','profile','whatsapp']){w.document.querySelector(`[data-action=${act}]`).click();await tick();if(!w.document.querySelector('#modal').open)throw new Error('Modal failed '+act);w.document.querySelector('#modal').close();}
  w.document.querySelector('[data-action=navigate][data-route=admin]').click();await tick();
- for(const tab of ['products','users','positions','withdrawals','deposits','coupons','settings','audit','overview']){w.document.querySelector(`[data-action=admin-tab][data-tab=${tab}]`).click();await tick();if(!w.document.querySelector('.admin-tabs'))throw new Error('Admin tab failed');}
+ for(const tab of ['products','users','positions','withdrawals','deposits','coupons','announcements','settings','audit','overview']){w.document.querySelector(`[data-action=admin-tab][data-tab=${tab}]`).click();await tick();if(!w.document.querySelector('.admin-tabs'))throw new Error('Admin tab failed');}
 
  // Confirm purchases, deposit simulation and withdrawal approval flows in the actual UI.
  const click=async sel=>{const el=w.document.querySelector(sel);if(!el)throw new Error('Missing control '+sel);el.click();await tick();};
@@ -115,7 +115,7 @@ try{
  assert.equal(w.document.querySelector('.welcome-card'),null,'Welcome banner disappears after confirmed redemption');
  await click('#modal [data-action=close]');await click('[data-action=refresh]');
  assert.equal(w.document.querySelector('.welcome-card'),null,'Already redeemed remains hidden after another server read');
- assert(w.document.querySelector('.community-card a').href.endsWith('BaQG9FSKZNYJXnJxNzVcyx'));
+ assert(w.document.querySelector('.community-card a').href.endsWith('EVLODOy777bBwDFkjNQIni'));
  // Admin pages work with histories larger than one screen, while user details
  // still expose independent affiliate levels, complete products and paid commissions.
  state=await store.snapshot(true);
@@ -188,6 +188,48 @@ try{
  w.document.querySelector('#modal [name=full_name]').value='Camila QA atualizada';w.document.querySelector('#modal [name=whatsapp]').value='21999994444';await submit();
  assert.equal(state.team.find(t=>t.id==='team-1').full_name,'Camila QA atualizada');assert.equal(state.team.find(t=>t.id==='team-1').whatsapp,'21999994444');
  // Existing notices remain untouched after the admin update.
- await click('[data-action=navigate][data-route=dashboard]');assert.equal(w.document.querySelector('.welcome-card'),null);assert(w.document.querySelector('.community-card a').href.endsWith('BaQG9FSKZNYJXnJxNzVcyx'));
- console.log('DOM smoke: user/payment/coupon flows, maturity and gifts, role revocation, all admin pages, independent audit/webhook pagination, detailed profiles, three affiliate levels, complete affiliate products and actual commissions passed.');
+ await click('[data-action=navigate][data-route=dashboard]');assert.equal(w.document.querySelector('.welcome-card'),null);assert(w.document.querySelector('.community-card a').href.endsWith('EVLODOy777bBwDFkjNQIni'));
+ // The admin publishes the actual dashboard content rather than a hardcoded UI notice.
+ const editNotice=async()=>{await click('[data-action=navigate][data-route=admin]');await click('.page [data-action=admin-tab][data-tab=announcements]');};
+ const publishNotice=async()=>{w.document.querySelector('form[data-form=announcement]').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();await tick();};
+ await editNotice();
+ assert.equal(w.document.querySelector('#announcement-preview a').href,'https://chat.whatsapp.com/EVLODOy777bBwDFkjNQIni');
+ let noticeForm=w.document.querySelector('form[data-form=announcement]'),firstRevision=Number(noticeForm.dataset.revision);
+ noticeForm.querySelector('[name=title]').value='Atualização <da comunidade>';
+ noticeForm.querySelector('[name=message]').value='Comunicado personalizado.\nLinha dois.';
+ noticeForm.querySelector('[name=image_url]').value='/assets/logo.png';
+ noticeForm.querySelector('[name=image_alt]').value='Logo Eletrify';
+ await click('#announcement-add-button');
+ let noticeRows=[...w.document.querySelectorAll('[data-announcement-button]')];
+ noticeRows[1].querySelector('[name=button_label]').value='Falar com suporte';noticeRows[1].querySelector('[name=button_url]').value='https://wa.me/5521999990000';noticeRows[1].querySelector('[name=button_style]').value='secondary';
+ noticeRows[1].querySelector('[data-announcement-move=up]').click();
+ noticeForm.dispatchEvent(new w.Event('input',{bubbles:true}));
+ assert.equal(w.document.querySelector('#announcement-preview h3').textContent,'Atualização <da comunidade>');assert.equal(w.document.querySelector('#announcement-preview h3 img'),null);
+ assert.equal(w.document.querySelector('#announcement-preview a').textContent,'Falar com suporte');
+ await publishNotice();
+ let published=await store.adminAnnouncementGet();assert.equal(published.revision,firstRevision+1);assert.equal(published.buttons.length,2);assert.equal(published.image_url,'/assets/logo.png');assert.equal(published.buttons[0].style,'secondary');
+ await click('[data-action=navigate][data-route=dashboard]');
+ assert(w.document.querySelector('#modal').open,'New revision reopens for an account that acknowledged the earlier group');
+ assert.equal(w.document.querySelector('#modal h2').textContent,'Atualização <da comunidade>');assert.equal(w.document.querySelector('#modal .announcement-image').getAttribute('src'),'/assets/logo.png');
+ assert(w.document.querySelector('#modal .announcement-message').textContent.includes('\nLinha dois.'));
+ await click('#modal .community-join');assert(!w.document.querySelector('#modal').open,'Every configured button acknowledges the published revision');
+ await click('[data-action=refresh]');assert(!w.document.querySelector('#modal').open);
+ await editNotice();
+ const {readAnnouncementForm}=await import('../src/lib/announcements.js');
+ const reloadedDraft=readAnnouncementForm(w.document.querySelector('form[data-form=announcement]'));
+ assert.deepEqual(reloadedDraft,Object.fromEntries(Object.keys(reloadedDraft).map(key=>[key,published[key]])),'Editor preserves stored content when reopened');
+ await publishNotice();assert.equal((await store.adminAnnouncementGet()).revision,published.revision,'An unchanged save does not reopen the notice');
+ await click('#announcement-republish');assert(w.document.querySelector('#modal').open);await submit();assert.equal((await store.adminAnnouncementGet()).revision,published.revision+1);
+ await click('[data-action=navigate][data-route=dashboard]');assert(w.document.querySelector('#modal').open,'Explicit republish reopens the current content');await click('#modal [data-action=close]');
+ await editNotice();noticeForm=w.document.querySelector('form[data-form=announcement]');noticeForm.querySelector('[name=active]').checked=false;await publishNotice();
+ await click('[data-action=navigate][data-route=dashboard]');assert.equal(w.document.querySelector('.community-card'),null);assert(!w.document.querySelector('#modal').open);
+ await click('[data-action=whatsapp]');assert.equal(w.document.querySelector('#modal a').href,'https://chat.whatsapp.com/EVLODOy777bBwDFkjNQIni');await click('#modal [data-action=close]');
+ await editNotice();noticeForm=w.document.querySelector('form[data-form=announcement]');noticeForm.querySelector('[name=active]').checked=true;noticeForm.querySelector('[name=show_popup]').checked=false;noticeForm.querySelector('[name=image_url]').value='';
+ [...w.document.querySelectorAll('[data-announcement-remove]')].forEach(b=>b.click());await publishNotice();
+ await click('[data-action=navigate][data-route=dashboard]');assert(w.document.querySelector('.community-card'));assert(!w.document.querySelector('#modal').open);assert.equal(w.document.querySelector('.community-card img'),null);assert.equal(w.document.querySelector('.community-card a'),null);
+ assert.equal(w.document.querySelector('.welcome-card'),null,'Announcement edits preserve prior welcome-coupon eligibility');
+ await editNotice();noticeForm=w.document.querySelector('form[data-form=announcement]');const invalidRevision=Number(noticeForm.dataset.revision);noticeForm.querySelector('[name=image_url]').value='javascript:alert(1)';await publishNotice();
+ assert(w.document.querySelector('form[data-form=announcement] .form-error').textContent.includes('links HTTPS'));
+ assert.equal((await store.adminAnnouncementGet()).revision,invalidRevision,'Invalid editor contents cannot overwrite the last publication');
+ console.log('DOM smoke: all user/admin/payment/coupon/profile flows plus announcement editing, live preview, image and multiple buttons, ordering, persistence, revision acknowledgement, republish, disable and card-only mode passed.');
 }finally{await unlink(base+'/smoke-store.mjs');await unlink(base+'/smoke-main.mjs');}

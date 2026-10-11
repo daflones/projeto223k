@@ -27,6 +27,9 @@ export async function adminPageData({section,page=1,page_size=20,search='',statu
  const {data,error}=await client.rpc('admin_page',{p_section:section,p_page:page,p_page_size:page_size,p_search:search,p_status:status,p_user_id:user_id,p_level:level});if(error)throw error;return data;
 }
 export async function adminUserProfile(id){if(demoApi)return demoApi.adminUserProfile(id);const {data,error}=await client.rpc('admin_user_profile',{p_user_id:id});if(error)throw error;return data;}
+export async function currentAnnouncement(){if(demoApi)return demoApi.currentAnnouncement();const {data,error}=await client.rpc('announcement_current');if(error)throw error;return data;}
+export async function adminAnnouncementGet(){if(demoApi)return demoApi.adminAnnouncementGet();const {data,error}=await client.rpc('announcement_admin_get');if(error)throw error;return data;}
+export async function adminAnnouncementSave(config,revision,republish=false){if(demoApi)return demoApi.adminAnnouncementSave(config,revision,republish);const {data,error}=await client.rpc('announcement_admin_save',{p_data:config,p_expected_revision:revision,p_republish:republish});if(error)throw error;return data;}
 export async function payment(name,data={}){
  if(demoApi)return demoApi.payment(name,data);
  const {data:out,error}=await client.functions.invoke('payments',{body:{action:name,...data}});if(error||out?.error)throw new Error(out?.error||error.message);return out;

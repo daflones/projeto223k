@@ -6,6 +6,8 @@ Atualização de comunidade e boas-vindas: **[docs/ATUALIZACAO-GRUPO-E-CUPOM.md]
 
 Atualização do admin: **[docs/ATUALIZACAO-ADMIN.md](docs/ATUALIZACAO-ADMIN.md)**. Inclui paginação no Supabase, busca/filtros, WhatsApp e perfil com equipe de três níveis, produtos dos afiliados e comissões recebidas. Continuidade no Devin: **[docs/DEVIN-PUBLICAR-ADMIN.md](docs/DEVIN-PUBLICAR-ADMIN.md)**.
 
+Avisos configuráveis: **[docs/ATUALIZACAO-AVISOS-PERSONALIZAVEIS.md](docs/ATUALIZACAO-AVISOS-PERSONALIZAVEIS.md)**. Atualiza o convite do grupo e adiciona **Administração → Avisos**, com título, mensagem, imagem, vários botões e publicação por versão no Supabase. Continuidade no Devin: **[docs/DEVIN-PUBLICAR-AVISOS-PERSONALIZAVEIS.md](docs/DEVIN-PUBLICAR-AVISOS-PERSONALIZAVEIS.md)**.
+
 ## Acesso rápido
 
 ```sh

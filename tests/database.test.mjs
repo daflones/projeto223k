@@ -460,12 +460,12 @@ await test('Tracked installation records only applied migrations and rejects an 
  try{
   await fresh.exec(bootstrap);await fresh.exec(sql);
   const versions=(await readdir(new URL('../supabase/migrations/',import.meta.url))).filter(x=>/^\d+_.+\.sql$/.test(x)).map(x=>x.split('_')[0]).sort();
-  assert.equal(versions.length,13);
+  assert.equal(versions.length,14);
   assert.deepEqual((await fresh.query('select version from supabase_migrations.schema_migrations order by version')).rows.map(x=>x.version),versions);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   assert.equal((await fresh.query("select has_schema_privilege('authenticated','supabase_migrations','USAGE') allowed")).rows[0].allowed,false);
   await assert.rejects(fresh.exec(sql),/Instalação automática exige banco novo/);await fresh.exec('rollback;');
-  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,13);
+  assert.equal((await fresh.query('select count(*) n from supabase_migrations.schema_migrations')).rows[0].n,14);
  }finally{await fresh.close();}
 });
 
@@ -478,7 +478,7 @@ await test('Complete SQL installer executes atomically and refuses a second inst
   await fresh.exec(bootstrap);await fresh.exec(sql);
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
   const permissions=(await fresh.query("select relname,relrowsecurity,has_table_privilege('authenticated',oid,'UPDATE') as direct_write from pg_class where relnamespace='public'::regnamespace and relkind='r'")).rows;
-  assert.equal(permissions.length,16);assert(permissions.every(p=>p.relrowsecurity&&!p.direct_write));
+  assert.equal(permissions.length,17);assert(permissions.every(p=>p.relrowsecurity&&!p.direct_write));
   await fresh.exec(await readFile(new URL('../supabase/sql/03_verificar_instalacao.sql',import.meta.url),'utf8'));
   await assert.rejects(fresh.exec(sql),/já instalada/);await fresh.exec('rollback');
   assert.equal((await fresh.query('select count(*) n from public.products')).rows[0].n,8);
